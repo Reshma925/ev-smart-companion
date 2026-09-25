@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'login.dart';
+import 'app_theme.dart';
 
 void main() {
   runApp(const EVSmartCompanionApp());
@@ -13,6 +14,7 @@ class EVSmartCompanionApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      theme: AppTheme.data,
       home: const EVHomePage(),
     );
   }
@@ -25,9 +27,7 @@ class EVHomePage extends StatefulWidget {
   State<EVHomePage> createState() => _EVHomePageState();
 }
 
-class _EVHomePageState extends State<EVHomePage>
-    with TickerProviderStateMixin {
-
+class _EVHomePageState extends State<EVHomePage> with TickerProviderStateMixin {
   late AnimationController logoController;
   late AnimationController textController;
 
@@ -53,25 +53,14 @@ class _EVHomePageState extends State<EVHomePage>
       duration: const Duration(milliseconds: 1200),
     );
 
-    logoScale = Tween<double>(
-      begin: 0.65,
-      end: 1.0,
-    ).animate(
-      CurvedAnimation(
-        parent: logoController,
-        curve: Curves.easeOutBack,
-      ),
+    logoScale = Tween<double>(begin: 0.65, end: 1.0).animate(
+      CurvedAnimation(parent: logoController, curve: Curves.easeOutBack),
     );
 
     logoFade = Tween<double>(
       begin: 0.0,
       end: 1.0,
-    ).animate(
-      CurvedAnimation(
-        parent: logoController,
-        curve: Curves.easeIn,
-      ),
-    );
+    ).animate(CurvedAnimation(parent: logoController, curve: Curves.easeIn));
 
     // ============================================================
     // TEXT ANIMATION
@@ -82,61 +71,35 @@ class _EVHomePageState extends State<EVHomePage>
       duration: const Duration(milliseconds: 1000),
     );
 
-    titleFade = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(
+    titleFade = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(
         parent: textController,
-        curve: const Interval(
-          0.0,
-          0.6,
-          curve: Curves.easeIn,
-        ),
+        curve: const Interval(0.0, 0.6, curve: Curves.easeIn),
       ),
     );
 
-    titleSlide = Tween<Offset>(
-      begin: const Offset(0, 0.5),
-      end: Offset.zero,
-    ).animate(
+    titleSlide = Tween<Offset>(begin: const Offset(0, 0.5), end: Offset.zero)
+        .animate(
+          CurvedAnimation(
+            parent: textController,
+            curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
+          ),
+        );
+
+    subtitleFade = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(
         parent: textController,
-        curve: const Interval(
-          0.0,
-          0.6,
-          curve: Curves.easeOut,
-        ),
+        curve: const Interval(0.35, 1.0, curve: Curves.easeIn),
       ),
     );
 
-    subtitleFade = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(
-      CurvedAnimation(
-        parent: textController,
-        curve: const Interval(
-          0.35,
-          1.0,
-          curve: Curves.easeIn,
-        ),
-      ),
-    );
-
-    subtitleSlide = Tween<Offset>(
-      begin: const Offset(0, 0.4),
-      end: Offset.zero,
-    ).animate(
-      CurvedAnimation(
-        parent: textController,
-        curve: const Interval(
-          0.35,
-          1.0,
-          curve: Curves.easeOut,
-        ),
-      ),
-    );
+    subtitleSlide = Tween<Offset>(begin: const Offset(0, 0.4), end: Offset.zero)
+        .animate(
+          CurvedAnimation(
+            parent: textController,
+            curve: const Interval(0.35, 1.0, curve: Curves.easeOut),
+          ),
+        );
 
     // ============================================================
     // START LOGO
@@ -148,61 +111,46 @@ class _EVHomePageState extends State<EVHomePage>
     // START TEXT AFTER LOGO HAS STARTED
     // ============================================================
 
-    Future.delayed(
-      const Duration(milliseconds: 700),
-      () async {
-        if (!mounted) return;
+    Future.delayed(const Duration(milliseconds: 700), () async {
+      if (!mounted) return;
 
-        await textController.forward();
+      await textController.forward();
 
-        if (!mounted) return;
+      if (!mounted) return;
 
-        // ========================================================
-        // 1 SECOND PAUSE AFTER ANIMATION
-        // ========================================================
+      // ========================================================
+      // 1 SECOND PAUSE AFTER ANIMATION
+      // ========================================================
 
-        await Future.delayed(
-          const Duration(seconds: 1),
-        );
+      await Future.delayed(const Duration(seconds: 1));
 
-        if (!mounted) return;
+      if (!mounted) return;
 
-        // ========================================================
-        // SMOOTH TRANSITION TO LOGIN PAGE
-        // ========================================================
+      // ========================================================
+      // SMOOTH TRANSITION TO LOGIN PAGE
+      // ========================================================
 
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            transitionDuration:
-                const Duration(milliseconds: 700),
+      Navigator.pushReplacement(
+        context,
+        PageRouteBuilder(
+          transitionDuration: const Duration(milliseconds: 700),
 
-            pageBuilder: (
-              context,
-              animation,
-              secondaryAnimation,
-            ) {
-              return const LoginPage();
-            },
+          pageBuilder: (context, animation, secondaryAnimation) {
+            return const LoginPage();
+          },
 
-            transitionsBuilder: (
-              context,
-              animation,
-              secondaryAnimation,
-              child,
-            ) {
-              return FadeTransition(
-                opacity: CurvedAnimation(
-                  parent: animation,
-                  curve: Curves.easeInOut,
-                ),
-                child: child,
-              );
-            },
-          ),
-        );
-      },
-    );
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return FadeTransition(
+              opacity: CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeInOut,
+              ),
+              child: child,
+            );
+          },
+        ),
+      );
+    });
   }
 
   @override
@@ -223,11 +171,9 @@ class _EVHomePageState extends State<EVHomePage>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-
                 // ==================================================
                 // ANIMATED LOGO
                 // ==================================================
-
                 FadeTransition(
                   opacity: logoFade,
                   child: ScaleTransition(
@@ -235,9 +181,7 @@ class _EVHomePageState extends State<EVHomePage>
                     child: SizedBox(
                       width: 340,
                       height: 340,
-                      child: CustomPaint(
-                        painter: EVLogoPainter(),
-                      ),
+                      child: CustomPaint(painter: EVLogoPainter()),
                     ),
                   ),
                 ),
@@ -247,7 +191,6 @@ class _EVHomePageState extends State<EVHomePage>
                 // ==================================================
                 // ANIMATED TITLE
                 // ==================================================
-
                 FadeTransition(
                   opacity: titleFade,
                   child: SlideTransition(
@@ -270,7 +213,6 @@ class _EVHomePageState extends State<EVHomePage>
                 // ==================================================
                 // ANIMATED SUBTITLE
                 // ==================================================
-
                 FadeTransition(
                   opacity: subtitleFade,
                   child: SlideTransition(
@@ -298,20 +240,14 @@ class _EVHomePageState extends State<EVHomePage>
   }
 }
 
-
 // ================================================================
 // EV LOGO PAINTER
 // ================================================================
 
 class EVLogoPainter extends CustomPainter {
-
   @override
   void paint(Canvas canvas, Size size) {
-
-    final center = Offset(
-      size.width / 2,
-      size.height / 2,
-    );
+    final center = Offset(size.width / 2, size.height / 2);
 
     // ============================================================
     // MAIN DARK CIRCLE
@@ -323,11 +259,7 @@ class EVLogoPainter extends CustomPainter {
       ..color = const Color(0xFF071326)
       ..style = PaintingStyle.fill;
 
-    canvas.drawCircle(
-      center,
-      radius,
-      outerPaint,
-    );
+    canvas.drawCircle(center, radius, outerPaint);
 
     // ============================================================
     // COMPLETE INNER CIRCLE
@@ -345,13 +277,7 @@ class EVLogoPainter extends CustomPainter {
       radius: radius * 0.80,
     );
 
-    canvas.drawArc(
-      innerCircle,
-      0,
-      2 * pi,
-      false,
-      linePaint,
-    );
+    canvas.drawArc(innerCircle, 0, 2 * pi, false, linePaint);
 
     // ============================================================
     // LIGHTNING BOLT
@@ -359,35 +285,17 @@ class EVLogoPainter extends CustomPainter {
 
     final Path lightning = Path();
 
-    lightning.moveTo(
-      center.dx + 42,
-      center.dy - 110,
-    );
+    lightning.moveTo(center.dx + 42, center.dy - 110);
 
-    lightning.lineTo(
-      center.dx - 64,
-      center.dy + 8,
-    );
+    lightning.lineTo(center.dx - 64, center.dy + 8);
 
-    lightning.lineTo(
-      center.dx - 10,
-      center.dy + 8,
-    );
+    lightning.lineTo(center.dx - 10, center.dy + 8);
 
-    lightning.lineTo(
-      center.dx - 42,
-      center.dy + 135,
-    );
+    lightning.lineTo(center.dx - 42, center.dy + 135);
 
-    lightning.lineTo(
-      center.dx + 82,
-      center.dy - 32,
-    );
+    lightning.lineTo(center.dx + 82, center.dy - 32);
 
-    lightning.lineTo(
-      center.dx + 27,
-      center.dy - 32,
-    );
+    lightning.lineTo(center.dx + 27, center.dy - 32);
 
     lightning.close();
 
@@ -399,22 +307,10 @@ class EVLogoPainter extends CustomPainter {
       ..shader = const LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
-        colors: [
-          Color(0xFF35A9E1),
-          Color(0xFF20D0A0),
-        ],
-      ).createShader(
-        Rect.fromCenter(
-          center: center,
-          width: 160,
-          height: 260,
-        ),
-      );
+        colors: [Color(0xFF35A9E1), Color(0xFF20D0A0)],
+      ).createShader(Rect.fromCenter(center: center, width: 160, height: 260));
 
-    canvas.drawPath(
-      lightning,
-      lightningPaint,
-    );
+    canvas.drawPath(lightning, lightningPaint);
 
     // ============================================================
     // CHARGING TERMINALS
@@ -425,27 +321,13 @@ class EVLogoPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 6;
 
-    final Offset leftTerminal = Offset(
-      center.dx - 78,
-      center.dy + 100,
-    );
+    final Offset leftTerminal = Offset(center.dx - 78, center.dy + 100);
 
-    canvas.drawCircle(
-      leftTerminal,
-      25,
-      terminalPaint,
-    );
+    canvas.drawCircle(leftTerminal, 25, terminalPaint);
 
-    final Offset rightTerminal = Offset(
-      center.dx + 78,
-      center.dy + 100,
-    );
+    final Offset rightTerminal = Offset(center.dx + 78, center.dy + 100);
 
-    canvas.drawCircle(
-      rightTerminal,
-      25,
-      terminalPaint,
-    );
+    canvas.drawCircle(rightTerminal, 25, terminalPaint);
 
     // ============================================================
     // LEFT CONNECTOR
@@ -453,15 +335,9 @@ class EVLogoPainter extends CustomPainter {
 
     final Path leftConnector = Path();
 
-    leftConnector.moveTo(
-      center.dx - 102,
-      center.dy + 120,
-    );
+    leftConnector.moveTo(center.dx - 102, center.dy + 120);
 
-    leftConnector.lineTo(
-      center.dx - 102,
-      center.dy + 153,
-    );
+    leftConnector.lineTo(center.dx - 102, center.dy + 153);
 
     leftConnector.quadraticBezierTo(
       center.dx - 102,
@@ -470,10 +346,7 @@ class EVLogoPainter extends CustomPainter {
       center.dy + 168,
     );
 
-    leftConnector.lineTo(
-      center.dx - 66,
-      center.dy + 168,
-    );
+    leftConnector.lineTo(center.dx - 66, center.dy + 168);
 
     leftConnector.quadraticBezierTo(
       center.dx - 51,
@@ -482,15 +355,9 @@ class EVLogoPainter extends CustomPainter {
       center.dy + 153,
     );
 
-    leftConnector.lineTo(
-      center.dx - 51,
-      center.dy + 132,
-    );
+    leftConnector.lineTo(center.dx - 51, center.dy + 132);
 
-    canvas.drawPath(
-      leftConnector,
-      terminalPaint,
-    );
+    canvas.drawPath(leftConnector, terminalPaint);
 
     // ============================================================
     // RIGHT CONNECTOR
@@ -498,15 +365,9 @@ class EVLogoPainter extends CustomPainter {
 
     final Path rightConnector = Path();
 
-    rightConnector.moveTo(
-      center.dx + 102,
-      center.dy + 120,
-    );
+    rightConnector.moveTo(center.dx + 102, center.dy + 120);
 
-    rightConnector.lineTo(
-      center.dx + 102,
-      center.dy + 153,
-    );
+    rightConnector.lineTo(center.dx + 102, center.dy + 153);
 
     rightConnector.quadraticBezierTo(
       center.dx + 102,
@@ -515,10 +376,7 @@ class EVLogoPainter extends CustomPainter {
       center.dy + 168,
     );
 
-    rightConnector.lineTo(
-      center.dx + 66,
-      center.dy + 168,
-    );
+    rightConnector.lineTo(center.dx + 66, center.dy + 168);
 
     rightConnector.quadraticBezierTo(
       center.dx + 51,
@@ -527,40 +385,23 @@ class EVLogoPainter extends CustomPainter {
       center.dy + 153,
     );
 
-    rightConnector.lineTo(
-      center.dx + 51,
-      center.dy + 132,
-    );
+    rightConnector.lineTo(center.dx + 51, center.dy + 132);
 
-    canvas.drawPath(
-      rightConnector,
-      terminalPaint,
-    );
+    canvas.drawPath(rightConnector, terminalPaint);
 
     // ============================================================
     // BOTTOM CONNECTION
     // ============================================================
 
     canvas.drawLine(
-      Offset(
-        center.dx - 51,
-        center.dy + 153,
-      ),
-      Offset(
-        center.dx + 51,
-        center.dy + 153,
-      ),
+      Offset(center.dx - 51, center.dy + 153),
+      Offset(center.dx + 51, center.dy + 153),
       terminalPaint,
     );
   }
 
   @override
-  bool shouldRepaint(
-    covariant CustomPainter oldDelegate,
-  ) {
+  bool shouldRepaint(covariant CustomPainter oldDelegate) {
     return false;
   }
 }
-
-
-
