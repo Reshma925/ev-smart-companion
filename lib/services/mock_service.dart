@@ -19,7 +19,7 @@ class MockService {
       model: 'Tata Nexon EV',
       registrationNumber: 'MH12CD5678',
       ownerName: 'Ananya Sharma',
-      vin: 'MAT627123NEXON0001',
+      vin: 'MAT627123NEXON001',
     ),
     Vehicle(
       model: 'Tata Curvv EV',

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "482915531162",
+    "project_id": "smart-ev-learning-companion",
+    "storage_bucket": "smart-ev-learning-companion.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:482915531162:android:161d1e08862e82c9cae223",
+        "android_client_info": {
+          "package_name": "com.example.flutter_application_2"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBN-YebH2Y5DFxj2MO78fKNhWs_TUoz7mI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../widgets/common_widgets.dart';
-import 'dashboard_placeholder.dart';
+import 'homescreen.dart';
 
 class VehicleConnectedPage extends StatelessWidget {
   const VehicleConnectedPage({super.key, required this.vehicle});
@@ -51,15 +51,14 @@ class VehicleConnectedPage extends StatelessWidget {
                 label: 'Connection Secure',
               ),
               const SizedBox(height: 28),
-              PrimaryButton(
-                label: 'Continue',
-                onPressed: () => Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const DashboardPlaceholder(),
-                  ),
-                ),
-              ),
+             PrimaryButton(
+             label: 'Continue',
+             onPressed: () => Navigator.pushAndRemoveUntil(
+             context,
+             MaterialPageRoute(builder: (_) => const HomeScreen()),
+            (route) => false,
+            ),
+            ),
             ],
           ),
         ),

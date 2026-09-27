@@ -6,6 +6,7 @@ import 'forgot_password_page.dart';
 import 'signup_page.dart';
 import 'vehicle_details_page.dart';
 
+
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
@@ -45,7 +46,7 @@ class _LoginPageState extends State<LoginPage> {
     }
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const VehicleDetailsPage()),
+      MaterialPageRoute(builder: (_) => VehicleDetailsPage()),
     );
   }
 
