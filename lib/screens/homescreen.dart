@@ -4,7 +4,8 @@ import '../models/vehicle.dart';
 import '../services/vehicle_simulator.dart';
 import 'charging_station_page.dart';
 import 'trip_planner.dart';
-
+import 'vehicle_health_page.dart';
+import 'maintenance.dart';
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.vehicle});
   final Vehicle vehicle;
@@ -172,8 +173,19 @@ class _HomeScreenState extends State<HomeScreen> {
                                   builder: (_) => TripPlannerPage(
                                       battery: d.battery, range: d.range)),
                             )),
-                    actionButton('Vehicle\nHealth', Icons.monitor_heart_outlined),
-                    actionButton('Mainte-\nnance', Icons.build_outlined),
+                            actionButton('Vehicle\nHealth', Icons.monitor_heart_outlined,
+                        () => Navigator.push(
+                     context,
+                     MaterialPageRoute(
+                      builder: (_) => VehicleHealthPage(vehicle: widget.vehicle)),
+                      )),
+                   
+                    actionButton('Mainte-\nnance', Icons.build_outlined,
+    () => Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (_) => MaintenancePage(vehicle: widget.vehicle)),
+        )),
                   ],
                 ),
               ],
