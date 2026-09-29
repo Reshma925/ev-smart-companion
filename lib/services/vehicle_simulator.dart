@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../models/vehicle.dart';
 
 class VehicleData {
   final double battery; // %
@@ -22,8 +23,13 @@ class VehicleData {
 }
 
 class VehicleSimulator {
-  // The place in Firebase where the car's data is saved
-  final _doc = FirebaseFirestore.instance.collection('vehicles').doc('demo');
+  VehicleSimulator(this.vehicle);
+  final Vehicle vehicle;
+
+  // Each vehicle gets its own record, named by its registration number
+  late final _doc = FirebaseFirestore.instance
+      .collection('vehicles')
+      .doc(vehicle.registrationNumber);
   Timer? _timer;
 
   double battery = 80;
@@ -56,12 +62,14 @@ class VehicleSimulator {
 
       // Save the new readings to Firebase
       _doc.set({
+        'model': vehicle.model,
+        'owner': vehicle.ownerName,
         'battery': double.parse(battery.toStringAsFixed(1)),
-       'range': double.parse(range.toStringAsFixed(1)),
-       'batteryHealth': double.parse(batteryHealth.toStringAsFixed(2)),
+        'range': double.parse(range.toStringAsFixed(1)),
+        'batteryHealth': double.parse(batteryHealth.toStringAsFixed(2)),
         'healthScore': healthScore,
         'isCharging': isCharging,
-         'updatedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
       });
     });
   }

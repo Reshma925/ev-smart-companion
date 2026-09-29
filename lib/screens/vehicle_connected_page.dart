@@ -55,7 +55,7 @@ class VehicleConnectedPage extends StatelessWidget {
              label: 'Continue',
              onPressed: () => Navigator.pushAndRemoveUntil(
              context,
-             MaterialPageRoute(builder: (_) => const HomeScreen()),
+            MaterialPageRoute(builder: (_) => HomeScreen(vehicle: vehicle)),
             (route) => false,
             ),
             ),

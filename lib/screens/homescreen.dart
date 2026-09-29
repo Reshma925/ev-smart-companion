@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
 import '../app_theme.dart';
+import '../models/vehicle.dart';
 import '../services/vehicle_simulator.dart';
 import 'charging_station_page.dart';
+import 'trip_planner.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, required this.vehicle});
+  final Vehicle vehicle;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final sim = VehicleSimulator();
+  late final sim = VehicleSimulator(widget.vehicle);
   int navIndex = 0;
 
   @override
@@ -49,12 +52,16 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 // Greeting
                 Text(
-                  '${greeting()}, User',
+                  '${greeting()}, ${widget.vehicle.ownerName.split(' ').first}',
                   style: const TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.w700,
                     color: AppTheme.navy,
                   ),
+                ),
+                Text(
+                  widget.vehicle.model,
+                  style: const TextStyle(color: AppTheme.mutedBlue),
                 ),
                 const SizedBox(height: 20),
 
@@ -150,11 +157,21 @@ class _HomeScreenState extends State<HomeScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                   actionButton('Charging\nMap', Icons.ev_station, () => Navigator.push(
-                     context,
-                      MaterialPageRoute(builder: (_) => const ChargingStationPage()),
-                )),
-                    actionButton('Trip\nPlanner', Icons.map_outlined),
+                    actionButton('Charging\nMap', Icons.ev_station,
+                        () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (_) => const ChargingStationPage()),
+                            )),
+                   
+                   
+                   actionButton('Trip\nPlanner', Icons.map_outlined,
+                        () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (_) => TripPlannerPage(
+                                      battery: d.battery, range: d.range)),
+                            )),
                     actionButton('Vehicle\nHealth', Icons.monitor_heart_outlined),
                     actionButton('Mainte-\nnance', Icons.build_outlined),
                   ],
@@ -213,7 +230,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       children: [
         InkWell(
-          onTap: onTap ?? () {}, // connect each screen here later
+          onTap: onTap ?? () {},
           borderRadius: BorderRadius.circular(16),
           child: Container(
             width: 60,
