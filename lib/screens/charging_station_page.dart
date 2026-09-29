@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../app_theme.dart';
 import '../services/station_service.dart';
+import 'package:flutter/foundation.dart';
 
 class ChargingStationPage extends StatefulWidget {
   const ChargingStationPage({super.key});
@@ -16,8 +18,10 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   final service = StationService();
   late final stationStream = service.stations();
 
-  // Fixed "current location" for now. Replace with real GPS later.
-  final myLocation = const LatLng(13.0827, 80.2707);
+  // Starts at Chennai, then moves to the user's real GPS location
+  LatLng myLocation = const LatLng(13.0827, 80.2707);
+  bool gotRealLocation = false;
+  String locationStatus = 'Getting your location...';
 
   String search = '';
   bool fastOnly = false;
@@ -28,8 +32,47 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   void initState() {
     super.initState();
     service.addSampleStationsIfEmpty();
+    getLocation();
   }
 
+  // Asks for permission, then reads the device's location
+    // Reads the device's location. Gives up after 20 seconds.
+  Future<void> getLocation() async {
+    try {
+      // On phones, ask for permission first. In Chrome, the browser asks by itself.
+      if (!kIsWeb) {
+        var permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.denied) {
+          permission = await Geolocator.requestPermission();
+        }
+        if (permission == LocationPermission.denied ||
+            permission == LocationPermission.deniedForever) {
+          setState(() => locationStatus =
+              'Location permission denied. Tap the map to set your location.');
+          return;
+        }
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.low,
+          timeLimit: Duration(seconds: 15),
+        ),
+      ).timeout(const Duration(seconds: 20));
+      debugPrint('Got location: ${pos.latitude}, ${pos.longitude}');
+      if (!mounted) return;
+      setState(() {
+        myLocation = LatLng(pos.latitude, pos.longitude);
+        gotRealLocation = true;
+        locationStatus = 'Your location: '
+            '${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}';
+      });
+    } catch (e) {
+      debugPrint('Location error: $e');
+      if (!mounted) return;
+      setState(() => locationStatus =
+          'Could not get location. Tap the map to set your location.');
+    }
+  }
   double dist(Station s) =>
       distanceKm(myLocation.latitude, myLocation.longitude, s.lat, s.lng);
 
@@ -124,7 +167,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
             children: [
               // Search bar and filter button
               Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                 child: Row(
                   children: [
                     Expanded(
@@ -145,10 +188,24 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
                 ),
               ),
 
+              // Shows what location the app is using
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  locationStatus,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: gotRealLocation ? Colors.green : AppTheme.mutedBlue,
+                  ),
+                ),
+              ),
+
               // Map with station markers
               SizedBox(
                 height: 250,
                 child: FlutterMap(
+                  // Rebuilds the map centred on the new location once it arrives
+                  key: ValueKey(myLocation),
                   options: MapOptions(initialCenter: myLocation, initialZoom: 11.5),
                   children: [
                     TileLayer(

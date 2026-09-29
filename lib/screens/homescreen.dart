@@ -1,5 +1,6 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../services/auth_service.dart';
@@ -7,9 +8,14 @@ import '../services/firestore_service.dart';
 import '../services/vehicle_simulator.dart';
 import 'charging_station_page.dart';
 import 'login_page.dart';
+import 'maintenance.dart';
+import 'trip_planner.dart';
+import 'vehicle_health_page.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, required this.vehicle});
+
+  final Vehicle vehicle;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -58,7 +64,13 @@ class _HomeScreenState extends State<HomeScreen> {
         'Your Firestore user profile has no registered vehicle.',
       );
     }
+    if (vehicleId != widget.vehicle.id) {
+      throw StateError(
+        'The selected vehicle does not match your Firestore profile.',
+      );
+    }
 
+    // Refresh identity from Firestore instead of treating the route argument as authoritative.
     final vehicle = await firestoreService.getVehicleById(vehicleId);
     if (vehicle == null) {
       throw StateError(
@@ -66,9 +78,8 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    final liveSimulator = VehicleSimulator(vehicleId: vehicle.id);
-    liveSimulator.start();
     simulator?.stop();
+    final liveSimulator = VehicleSimulator(vehicleId: vehicle.id)..start();
     simulator = liveSimulator;
     return _DashboardIdentity(
       name: profile.name,
@@ -142,30 +153,26 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               );
             }
+
             final identity = identitySnapshot.data!;
             return StreamBuilder<VehicleData>(
               stream: identity.simulator.stream,
-              builder: (context, snap) {
-                if (snap.hasError) {
+              builder: (context, telemetrySnapshot) {
+                if (telemetrySnapshot.hasError) {
                   return Center(
                     child: Text(
-                      'Could not load vehicle telemetry: ${snap.error}',
+                      'Could not load vehicle telemetry: ${telemetrySnapshot.error}',
                     ),
                   );
                 }
-                if (!snap.hasData) {
-                  return const Center(
-                    child: Text(
-                      'No telemetry data is currently available for this Firestore vehicle.',
-                      textAlign: TextAlign.center,
-                    ),
-                  );
+                if (!telemetrySnapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
                 }
-                final d = snap.data!;
+
+                final data = telemetrySnapshot.data!;
                 return ListView(
                   padding: const EdgeInsets.all(20),
                   children: [
-                    // Greeting
                     Row(
                       children: [
                         Expanded(
@@ -201,29 +208,24 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 20),
-
+                    const SizedBox(height: 8),
                     Text(
                       '${identity.vehicle.registrationNumber} · ${identity.vehicle.bluetoothDeviceName}',
                       style: const TextStyle(color: AppTheme.mutedBlue),
                     ),
-                    const SizedBox(height: 14),
-
-                    // Vehicle image
+                    const SizedBox(height: 16),
                     const Icon(
                       Icons.electric_car,
                       size: 110,
                       color: AppTheme.blue,
                     ),
                     const SizedBox(height: 20),
-
-                    // Battery % and Range
                     Row(
                       children: [
                         Expanded(
                           child: infoCard(
                             'Battery',
-                            '${d.battery.toStringAsFixed(0)}%',
+                            '${data.battery.toStringAsFixed(0)}%',
                             Icons.battery_std,
                           ),
                         ),
@@ -231,15 +233,13 @@ class _HomeScreenState extends State<HomeScreen> {
                         Expanded(
                           child: infoCard(
                             'Range',
-                            '${d.range.toStringAsFixed(0)} km',
+                            '${data.range.toStringAsFixed(0)} km',
                             Icons.route,
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 20),
-
-                    // Vehicle Health Score (circular gauge)
                     Center(
                       child: SizedBox(
                         width: 140,
@@ -248,7 +248,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           fit: StackFit.expand,
                           children: [
                             CircularProgressIndicator(
-                              value: d.healthScore / 100,
+                              value: data.healthScore / 100,
                               strokeWidth: 12,
                               color: AppTheme.blue,
                               backgroundColor: Colors.grey.shade200,
@@ -258,7 +258,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Text(
-                                    '${d.healthScore}',
+                                    '${data.healthScore}',
                                     style: const TextStyle(
                                       fontSize: 32,
                                       fontWeight: FontWeight.w700,
@@ -277,14 +277,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                     const SizedBox(height: 20),
-
-                    // Battery Health and Charging Status
                     Row(
                       children: [
                         Expanded(
                           child: infoCard(
                             'Battery Health',
-                            '${d.batteryHealth.toStringAsFixed(1)}%',
+                            '${data.batteryHealth.toStringAsFixed(1)}%',
                             Icons.favorite_outline,
                           ),
                         ),
@@ -292,8 +290,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         Expanded(
                           child: infoCard(
                             'Charging',
-                            d.isCharging ? 'Charging' : 'Not charging',
-                            d.isCharging
+                            data.isCharging ? 'Charging' : 'Not charging',
+                            data.isCharging
                                 ? Icons.battery_charging_full
                                 : Icons.power_off,
                           ),
@@ -301,8 +299,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                     const SizedBox(height: 24),
-
-                    // Quick Action Buttons
                     const Text(
                       'Quick Actions',
                       style: TextStyle(
@@ -325,12 +321,41 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                         ),
-                        actionButton('Trip\nPlanner', Icons.map_outlined),
+                        actionButton(
+                          'Trip\nPlanner',
+                          Icons.map_outlined,
+                          () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => TripPlannerPage(
+                                battery: data.battery,
+                                range: data.range,
+                              ),
+                            ),
+                          ),
+                        ),
                         actionButton(
                           'Vehicle\nHealth',
                           Icons.monitor_heart_outlined,
+                          () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  VehicleHealthPage(vehicle: identity.vehicle),
+                            ),
+                          ),
                         ),
-                        actionButton('Mainte-\nnance', Icons.build_outlined),
+                        actionButton(
+                          'Mainte-\nnance',
+                          Icons.build_outlined,
+                          () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  MaintenancePage(vehicle: identity.vehicle),
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -340,11 +365,9 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         ),
       ),
-
-      // Bottom Navigation Bar
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: navIndex,
-        onTap: (i) => setState(() => navIndex = i),
+        onTap: (index) => setState(() => navIndex = index),
         type: BottomNavigationBarType.fixed,
         selectedItemColor: AppTheme.blue,
         unselectedItemColor: AppTheme.mutedBlue,
@@ -392,7 +415,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       children: [
         InkWell(
-          onTap: onTap ?? () {}, // connect each screen here later
+          onTap: onTap ?? () {},
           borderRadius: BorderRadius.circular(16),
           child: Container(
             width: 60,

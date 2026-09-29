@@ -72,7 +72,9 @@ class VehicleConnectedPage extends StatelessWidget {
                 label: 'Continue',
                 onPressed: () => Navigator.pushAndRemoveUntil(
                   context,
-                  MaterialPageRoute(builder: (_) => const HomeScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => HomeScreen(vehicle: vehicle),
+                  ),
                   (route) => false,
                 ),
               ),
@@ -83,7 +85,6 @@ class VehicleConnectedPage extends StatelessWidget {
     );
   }
 }
-
 class _StatusRow extends StatelessWidget {
   const _StatusRow({required this.icon, required this.label});
   final IconData icon;
