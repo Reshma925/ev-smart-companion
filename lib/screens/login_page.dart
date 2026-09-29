@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import '../app_theme.dart';
-import '../services/mock_service.dart';
+import '../services/auth_service.dart';
+import '../services/firestore_service.dart';
 import '../widgets/common_widgets.dart';
+import 'bluetooth_scanning_page.dart';
 import 'forgot_password_page.dart';
 import 'signup_page.dart';
-import 'vehicle_details_page.dart';
-
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -18,6 +18,9 @@ class _LoginPageState extends State<LoginPage> {
   final formKey = GlobalKey<FormState>();
   final identityController = TextEditingController();
   final passwordController = TextEditingController();
+  late final authService = AuthService();
+  late final firestoreService = FirestoreService();
+  bool isLoading = false;
 
   @override
   void dispose() {
@@ -26,28 +29,108 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  void login() {
+  Future<void> login() async {
+    if (isLoading) return;
     if (!formKey.currentState!.validate()) return;
-    final identity = identityController.text.trim();
-    final hasSavedAccount =
-        MockService.accountEmail != null || MockService.accountMobile != null;
-    final matchesAccount =
-        identity.toLowerCase() == MockService.accountEmail?.toLowerCase() ||
-        identity == MockService.accountMobile;
-    if (hasSavedAccount &&
-        (!matchesAccount ||
-            passwordController.text != MockService.accountPassword)) {
-      showErrorDialog(
-        context,
-        'The email/mobile number or password is incorrect.',
-        title: 'Login failed',
+    setState(() => isLoading = true);
+    try {
+      final credential = await authService.signInWithEmail(
+        email: identityController.text,
+        password: passwordController.text,
       );
-      return;
+      final user = credential.user;
+      if (user == null) throw StateError('Firebase returned no user.');
+      final profile = await firestoreService.getUserProfile(user.uid);
+      if (!mounted) return;
+      if (profile == null) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const SignUpPage(authenticatedOnboarding: true),
+          ),
+          (route) => false,
+        );
+        return;
+      }
+      if (profile.vehicleId == null || profile.vehicleId!.isEmpty) {
+        throw StateError(
+          'Your Firestore profile has no vehicle mapping. Contact support.',
+        );
+      }
+      final vehicle = await firestoreService.getCurrentUserVehicle(user.uid);
+      if (!mounted) return;
+      if (vehicle == null) {
+        throw StateError(
+          'Your registered vehicle is unavailable. Contact support to restore access.',
+        );
+      }
+      final destination = BluetoothScanningPage(vehicle: vehicle);
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => destination),
+        (route) => false,
+      );
+    } catch (error) {
+      if (mounted) {
+        await showErrorDialog(
+          context,
+          authService.messageFor(error),
+          title: 'Login failed',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => isLoading = false);
     }
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => VehicleDetailsPage()),
-    );
+  }
+
+  Future<void> continueWithGoogle() async {
+    if (isLoading) return;
+    setState(() => isLoading = true);
+    try {
+      final credential = await authService.signInWithGoogle();
+      final user = credential?.user;
+      if (user == null) return;
+      final profile = await firestoreService.getUserProfile(user.uid);
+      if (!mounted) return;
+      if (profile == null) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const SignUpPage(authenticatedOnboarding: true),
+          ),
+          (route) => false,
+        );
+        return;
+      }
+      if (profile.vehicleId == null || profile.vehicleId!.isEmpty) {
+        throw StateError(
+          'Your Firestore profile has no vehicle mapping. Contact support.',
+        );
+      }
+      final vehicle = await firestoreService.getCurrentUserVehicle(user.uid);
+      if (!mounted) return;
+      if (vehicle == null) {
+        throw StateError(
+          'Your registered vehicle is unavailable. Contact support to restore access.',
+        );
+      }
+      final destination = BluetoothScanningPage(vehicle: vehicle);
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => destination),
+        (route) => false,
+      );
+    } catch (error) {
+      if (mounted) {
+        await showErrorDialog(
+          context,
+          '${authService.messageFor(error)}\n\nDetails: $error',
+          title: 'Google sign-in failed',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
   }
 
   @override
@@ -83,11 +166,16 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 38),
                 TextInputField(
                   controller: identityController,
-                  label: 'Email or Mobile Number',
-                  hint: 'Enter email or mobile number',
+                  label: 'Email',
+                  hint: 'Enter your email',
                   icon: Icons.person_outline,
-                  validator: (value) => value == null || value.trim().isEmpty
-                      ? 'Enter your email or mobile number'
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (value) =>
+                      value == null ||
+                          !RegExp(
+                            r'^[^\s@]+@[^\s@]+\.[^\s@]+$',
+                          ).hasMatch(value.trim())
+                      ? 'Enter a valid email address'
                       : null,
                 ),
                 const SizedBox(height: 20),
@@ -102,12 +190,14 @@ class _LoginPageState extends State<LoginPage> {
                 Align(
                   alignment: Alignment.centerRight,
                   child: TextButton(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const ForgotPasswordPage(),
-                      ),
-                    ),
+                    onPressed: isLoading
+                        ? null
+                        : () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const ForgotPasswordPage(),
+                            ),
+                          ),
                     child: const Text(
                       'Forgot Password?',
                       style: TextStyle(
@@ -118,7 +208,11 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                 ),
                 const SizedBox(height: 5),
-                PrimaryButton(label: 'Log In', onPressed: login),
+                PrimaryButton(
+                  label: 'Log In',
+                  onPressed: login,
+                  isLoading: isLoading,
+                ),
                 const SizedBox(height: 29),
                 Row(
                   children: [
@@ -141,15 +235,21 @@ class _LoginPageState extends State<LoginPage> {
                   width: double.infinity,
                   height: 52,
                   child: OutlinedButton.icon(
-                    onPressed: () {},
-                    icon: const Icon(
-                      Icons.g_mobiledata,
-                      size: 28,
-                      color: Colors.black,
-                    ),
-                    label: const Text(
-                      'Continue with Google',
-                      style: TextStyle(color: AppTheme.navy),
+                    onPressed: isLoading ? null : continueWithGoogle,
+                    icon: isLoading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(
+                            Icons.g_mobiledata,
+                            size: 28,
+                            color: Colors.black,
+                          ),
+                    label: Text(
+                      isLoading ? 'Please wait…' : 'Continue with Google',
+                      style: const TextStyle(color: AppTheme.navy),
                     ),
                     style: OutlinedButton.styleFrom(
                       side: const BorderSide(color: Color(0xFFD9E0E8)),
@@ -170,10 +270,14 @@ class _LoginPageState extends State<LoginPage> {
                         style: TextStyle(color: AppTheme.mutedBlue),
                       ),
                       TextButton(
-                        onPressed: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const SignUpPage()),
-                        ),
+                        onPressed: isLoading
+                            ? null
+                            : () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const SignUpPage(),
+                                ),
+                              ),
                         child: const Text(
                           'Sign Up',
                           style: TextStyle(

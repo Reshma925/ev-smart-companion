@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
+import '../services/auth_service.dart';
 import '../app_theme.dart';
 import '../widgets/common_widgets.dart';
-import 'otp_page.dart';
 
 class ForgotPasswordPage extends StatefulWidget {
   const ForgotPasswordPage({super.key});
@@ -13,11 +13,47 @@ class ForgotPasswordPage extends StatefulWidget {
 class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   final formKey = GlobalKey<FormState>();
   final identity = TextEditingController();
+  late final authService = AuthService();
+  bool isLoading = false;
 
   @override
   void dispose() {
     identity.dispose();
     super.dispose();
+  }
+
+  Future<void> sendResetEmail() async {
+    if (isLoading || !formKey.currentState!.validate()) return;
+    setState(() => isLoading = true);
+    try {
+      await authService.sendPasswordResetEmail(identity.text.trim());
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Check your email'),
+          content: const Text(
+            'If an account exists for that address, Firebase will send a password reset link.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        await showErrorDialog(
+          context,
+          authService.messageFor(error),
+          title: 'Unable to send reset email',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
   }
 
   @override
@@ -51,24 +87,23 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                 const SizedBox(height: 30),
                 TextInputField(
                   controller: identity,
-                  label: 'Email or Mobile Number',
-                  hint: 'Enter email or mobile number',
-                  icon: Icons.person_outline,
-                  validator: (v) => v == null || v.trim().isEmpty
-                      ? 'Enter your email or mobile number'
+                  label: 'Email',
+                  hint: 'Enter your account email',
+                  icon: Icons.email_outlined,
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (v) =>
+                      v == null ||
+                          !RegExp(
+                            r'^[^\s@]+@[^\s@]+\.[^\s@]+$',
+                          ).hasMatch(v.trim())
+                      ? 'Enter a valid email address'
                       : null,
                 ),
                 const SizedBox(height: 28),
                 PrimaryButton(
-                  label: 'Send OTP',
-                  onPressed: () {
-                    if (formKey.currentState!.validate()) {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const OtpPage()),
-                      );
-                    }
-                  },
+                  label: 'Send Reset Link',
+                  onPressed: sendResetEmail,
+                  isLoading: isLoading,
                 ),
               ],
             ),

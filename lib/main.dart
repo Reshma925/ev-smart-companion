@@ -1,15 +1,12 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
-import 'login.dart';
+import 'screens/auth_gate.dart';
 import 'app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const EVSmartCompanionApp());
 }
 
@@ -142,7 +139,7 @@ class _EVHomePageState extends State<EVHomePage> with TickerProviderStateMixin {
           transitionDuration: const Duration(milliseconds: 700),
 
           pageBuilder: (context, animation, secondaryAnimation) {
-            return const LoginPage();
+            return const AuthGate();
           },
 
           transitionsBuilder: (context, animation, secondaryAnimation, child) {
@@ -186,7 +183,7 @@ class _EVHomePageState extends State<EVHomePage> with TickerProviderStateMixin {
                     scale: logoScale,
                     child: SizedBox(
                       width: 340,
-                      height: 340,
+                      height: 340 * 480 / 650,
                       child: CustomPaint(painter: EVLogoPainter()),
                     ),
                   ),
@@ -253,157 +250,57 @@ class _EVHomePageState extends State<EVHomePage> with TickerProviderStateMixin {
 class EVLogoPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
+    // Preserve the supplied logo's 650 × 480 design geometry.
+    canvas.scale(size.width / 650, size.height / 480);
 
-    // ============================================================
-    // MAIN DARK CIRCLE
-    // ============================================================
+    final bgPaint = Paint()..color = const Color(0xFF0B1524);
+    canvas.drawCircle(const Offset(325, 232), 232, bgPaint);
 
-    final double radius = size.width * 0.46;
-
-    final Paint outerPaint = Paint()
-      ..color = const Color(0xFF071326)
-      ..style = PaintingStyle.fill;
-
-    canvas.drawCircle(center, radius, outerPaint);
-
-    // ============================================================
-    // COMPLETE INNER CIRCLE
-    // ============================================================
-
-    final Paint linePaint = Paint()
-      ..color = const Color(0xFF6383AA)
+    final outline = Paint()
+      ..color = const Color(0xFF5B7FA8)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 5
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
 
-    final Rect innerCircle = Rect.fromCircle(
-      center: center,
-      radius: radius * 0.80,
-    );
+    final body = Path()
+      ..moveTo(180, 370)
+      ..cubicTo(120, 320, 108, 260, 108, 200)
+      ..cubicTo(108, 110, 200, 62, 325, 62)
+      ..cubicTo(450, 62, 542, 110, 542, 200)
+      ..cubicTo(542, 260, 530, 320, 468, 370)
+      ..lineTo(468, 402)
+      ..quadraticBezierTo(468, 420, 450, 420)
+      ..lineTo(430, 420)
+      ..quadraticBezierTo(412, 420, 412, 402)
+      ..lineTo(412, 388)
+      ..lineTo(238, 388)
+      ..lineTo(238, 402)
+      ..quadraticBezierTo(238, 420, 220, 420)
+      ..lineTo(200, 420)
+      ..quadraticBezierTo(180, 420, 180, 402)
+      ..close();
+    canvas.drawPath(body, outline);
 
-    canvas.drawArc(innerCircle, 0, 2 * pi, false, linePaint);
+    canvas.drawCircle(const Offset(200, 332), 22, outline);
+    canvas.drawCircle(const Offset(448, 332), 22, outline);
 
-    // ============================================================
-    // LIGHTNING BOLT
-    // ============================================================
+    final bolt = Path()
+      ..moveTo(358, 118)
+      ..lineTo(273, 247)
+      ..lineTo(322, 247)
+      ..lineTo(289, 348)
+      ..lineTo(388, 217)
+      ..lineTo(340, 217)
+      ..close();
 
-    final Path lightning = Path();
-
-    lightning.moveTo(center.dx + 42, center.dy - 110);
-
-    lightning.lineTo(center.dx - 64, center.dy + 8);
-
-    lightning.lineTo(center.dx - 10, center.dy + 8);
-
-    lightning.lineTo(center.dx - 42, center.dy + 135);
-
-    lightning.lineTo(center.dx + 82, center.dy - 32);
-
-    lightning.lineTo(center.dx + 27, center.dy - 32);
-
-    lightning.close();
-
-    // ============================================================
-    // LIGHTNING GRADIENT
-    // ============================================================
-
-    final Paint lightningPaint = Paint()
+    final boltPaint = Paint()
       ..shader = const LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
-        colors: [Color(0xFF35A9E1), Color(0xFF20D0A0)],
-      ).createShader(Rect.fromCenter(center: center, width: 160, height: 260));
-
-    canvas.drawPath(lightning, lightningPaint);
-
-    // ============================================================
-    // CHARGING TERMINALS
-    // ============================================================
-
-    final Paint terminalPaint = Paint()
-      ..color = const Color(0xFF6383AA)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 6;
-
-    final Offset leftTerminal = Offset(center.dx - 78, center.dy + 100);
-
-    canvas.drawCircle(leftTerminal, 25, terminalPaint);
-
-    final Offset rightTerminal = Offset(center.dx + 78, center.dy + 100);
-
-    canvas.drawCircle(rightTerminal, 25, terminalPaint);
-
-    // ============================================================
-    // LEFT CONNECTOR
-    // ============================================================
-
-    final Path leftConnector = Path();
-
-    leftConnector.moveTo(center.dx - 102, center.dy + 120);
-
-    leftConnector.lineTo(center.dx - 102, center.dy + 153);
-
-    leftConnector.quadraticBezierTo(
-      center.dx - 102,
-      center.dy + 168,
-      center.dx - 87,
-      center.dy + 168,
-    );
-
-    leftConnector.lineTo(center.dx - 66, center.dy + 168);
-
-    leftConnector.quadraticBezierTo(
-      center.dx - 51,
-      center.dy + 168,
-      center.dx - 51,
-      center.dy + 153,
-    );
-
-    leftConnector.lineTo(center.dx - 51, center.dy + 132);
-
-    canvas.drawPath(leftConnector, terminalPaint);
-
-    // ============================================================
-    // RIGHT CONNECTOR
-    // ============================================================
-
-    final Path rightConnector = Path();
-
-    rightConnector.moveTo(center.dx + 102, center.dy + 120);
-
-    rightConnector.lineTo(center.dx + 102, center.dy + 153);
-
-    rightConnector.quadraticBezierTo(
-      center.dx + 102,
-      center.dy + 168,
-      center.dx + 87,
-      center.dy + 168,
-    );
-
-    rightConnector.lineTo(center.dx + 66, center.dy + 168);
-
-    rightConnector.quadraticBezierTo(
-      center.dx + 51,
-      center.dy + 168,
-      center.dx + 51,
-      center.dy + 153,
-    );
-
-    rightConnector.lineTo(center.dx + 51, center.dy + 132);
-
-    canvas.drawPath(rightConnector, terminalPaint);
-
-    // ============================================================
-    // BOTTOM CONNECTION
-    // ============================================================
-
-    canvas.drawLine(
-      Offset(center.dx - 51, center.dy + 153),
-      Offset(center.dx + 51, center.dy + 153),
-      terminalPaint,
-    );
+        colors: [Color(0xFF3A9AD9), Color(0xFF2DBE8E)],
+      ).createShader(const Rect.fromLTWH(273, 118, 115, 230));
+    canvas.drawPath(bolt, boltPaint);
   }
 
   @override

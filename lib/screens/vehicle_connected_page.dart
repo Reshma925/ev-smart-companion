@@ -41,24 +41,41 @@ class VehicleConnectedPage extends StatelessWidget {
               ),
               const SizedBox(height: 28),
               VehicleCard(vehicle: vehicle),
+              const SizedBox(height: 10),
+              Text(
+                vehicle.bluetoothDeviceName.isEmpty
+                    ? 'Bluetooth name unavailable'
+                    : vehicle.bluetoothDeviceName,
+                style: const TextStyle(
+                  color: AppTheme.navy,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (vehicle.bluetoothDeviceId.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  vehicle.bluetoothDeviceId,
+                  style: const TextStyle(color: AppTheme.mutedBlue),
+                ),
+              ],
               const SizedBox(height: 18),
               const _StatusRow(
-                icon: Icons.bluetooth_connected,
-                label: 'Bluetooth Connected',
+                icon: Icons.bluetooth_searching,
+                label: 'Simulator preview (BLE not configured)',
               ),
               const _StatusRow(
                 icon: Icons.lock_outline,
-                label: 'Connection Secure',
+                label: 'Firestore vehicle identity loaded',
               ),
               const SizedBox(height: 28),
-             PrimaryButton(
-             label: 'Continue',
-             onPressed: () => Navigator.pushAndRemoveUntil(
-             context,
-             MaterialPageRoute(builder: (_) => const HomeScreen()),
-            (route) => false,
-            ),
-            ),
+              PrimaryButton(
+                label: 'Continue',
+                onPressed: () => Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HomeScreen()),
+                  (route) => false,
+                ),
+              ),
             ],
           ),
         ),

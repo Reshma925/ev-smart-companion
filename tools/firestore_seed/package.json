@@ -1,0 +1,12 @@
+{
+  "name": "ev-smart-companion-firestore-seed",
+  "private": true,
+  "version": "1.0.0",
+  "description": "One-time development seeding for pre-registered EV vehicles.",
+  "scripts": {
+    "seed": "node seed-vehicles.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}

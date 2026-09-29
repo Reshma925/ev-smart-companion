@@ -45,7 +45,7 @@ class _BluetoothScanningPageState extends State<BluetoothScanningPage>
           child: Column(
             children: [
               const Text(
-                'Connect Vehicle',
+                'Vehicle Pairing',
                 style: TextStyle(
                   fontSize: 28,
                   fontWeight: FontWeight.w700,
@@ -71,7 +71,9 @@ class _BluetoothScanningPageState extends State<BluetoothScanningPage>
               ),
               const SizedBox(height: 28),
               Text(
-                found ? 'Vehicle Found' : 'Searching for nearby vehicle...',
+                found
+                    ? 'Simulator entry found'
+                    : 'Checking saved vehicle identity...',
                 style: const TextStyle(
                   fontSize: 19,
                   fontWeight: FontWeight.w700,
@@ -96,13 +98,15 @@ class _BluetoothScanningPageState extends State<BluetoothScanningPage>
                         size: 32,
                       ),
                       const SizedBox(width: 14),
-                      const Expanded(
+                      Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'EV-Simulator-01',
-                              style: TextStyle(
+                              widget.vehicle.bluetoothDeviceName.isEmpty
+                                  ? 'Bluetooth name unavailable'
+                                  : widget.vehicle.bluetoothDeviceName,
+                              style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                                 color: AppTheme.navy,
                                 fontSize: 16,
@@ -110,8 +114,10 @@ class _BluetoothScanningPageState extends State<BluetoothScanningPage>
                             ),
                             SizedBox(height: 5),
                             Text(
-                              'Available',
-                              style: TextStyle(
+                              widget.vehicle.bluetoothDeviceId.isEmpty
+                                  ? 'Bluetooth ID unavailable'
+                                  : widget.vehicle.bluetoothDeviceId,
+                              style: const TextStyle(
                                 color: Color(0xFF20A36A),
                                 fontSize: 13,
                               ),
@@ -123,15 +129,20 @@ class _BluetoothScanningPageState extends State<BluetoothScanningPage>
                         width: 95,
                         height: 42,
                         child: ElevatedButton(
-                          onPressed: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  VehicleConnectedPage(vehicle: widget.vehicle),
-                            ),
-                          ),
+                          onPressed:
+                              widget.vehicle.bluetoothDeviceId.isEmpty ||
+                                  widget.vehicle.bluetoothDeviceName.isEmpty
+                              ? null
+                              : () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => VehicleConnectedPage(
+                                      vehicle: widget.vehicle,
+                                    ),
+                                  ),
+                                ),
                           child: const Text(
-                            'CONNECT',
+                            'DEMO',
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w700,
@@ -144,7 +155,7 @@ class _BluetoothScanningPageState extends State<BluetoothScanningPage>
                 )
               else
                 const Text(
-                  'Make sure your vehicle is nearby and ready to connect.',
+                  'This page previews the saved vehicle identity. Real BLE scanning is not configured in this project.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppTheme.mutedBlue),
                 ),

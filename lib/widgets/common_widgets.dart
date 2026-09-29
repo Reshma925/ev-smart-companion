@@ -7,11 +7,13 @@ class PrimaryButton extends StatelessWidget {
     required this.label,
     required this.onPressed,
     this.icon,
+    this.isLoading = false,
   });
 
   final String label;
   final VoidCallback? onPressed;
   final IconData? icon;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -19,9 +21,20 @@ class PrimaryButton extends StatelessWidget {
       width: double.infinity,
       height: 54,
       child: ElevatedButton.icon(
-        onPressed: onPressed,
-        icon: icon == null ? const SizedBox.shrink() : Icon(icon, size: 19),
-        label: Text(label.toUpperCase()),
+        onPressed: isLoading ? null : onPressed,
+        icon: isLoading
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : icon == null
+            ? const SizedBox.shrink()
+            : Icon(icon, size: 19),
+        label: Text(isLoading ? 'PLEASE WAIT' : label.toUpperCase()),
         style: ElevatedButton.styleFrom(
           backgroundColor: AppTheme.navy,
           foregroundColor: Colors.white,

@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
-import '../app_theme.dart';
-import '../services/mock_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../models/user_model.dart';
+import '../services/auth_service.dart';
+import '../services/firestore_service.dart';
 import '../widgets/common_widgets.dart';
-import 'vehicle_verifying_page.dart';
+import 'bluetooth_scanning_page.dart';
 
 class VehicleDetailsPage extends StatefulWidget {
-  const VehicleDetailsPage({super.key});
+  const VehicleDetailsPage({super.key, this.pendingSignup});
+
+  final PendingSignup? pendingSignup;
 
   @override
   State<VehicleDetailsPage> createState() => _VehicleDetailsPageState();
@@ -14,36 +18,134 @@ class VehicleDetailsPage extends StatefulWidget {
 class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
   final formKey = GlobalKey<FormState>();
   final registration = TextEditingController();
-  final owner = TextEditingController();
+  final model = TextEditingController();
+  final ownerName = TextEditingController();
   final vin = TextEditingController();
-  String? model;
+  final authService = AuthService();
+  final firestoreService = FirestoreService();
+  bool isLoading = false;
 
   @override
   void dispose() {
     registration.dispose();
-    owner.dispose();
+    model.dispose();
+    ownerName.dispose();
     vin.dispose();
     super.dispose();
   }
 
-  void verify() {
-    if (!formKey.currentState!.validate() || model == null) {
-      showErrorDialog(
-        context,
-        'Select a vehicle model and complete every field.',
-      );
+  Future<void> saveVehicleAndContinue() async {
+    if (isLoading) return;
+    if (!formKey.currentState!.validate()) {
       return;
     }
-    final vehicle = MockService.findVehicle(
-      model: model!,
-      registrationNumber: registration.text.trim().replaceAll(' ', ''),
-      ownerName: owner.text.trim(),
-      vin: vin.text.trim(),
-    );
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => VehicleVerifyingPage(vehicle: vehicle)),
-    );
+    setState(() => isLoading = true);
+    User? newlyCreatedUser;
+    var profileCreated = false;
+    try {
+      final signup = widget.pendingSignup;
+      final vehicle = await firestoreService.verifyVehicleDetails(
+        registrationNumber: registration.text,
+        model: model.text,
+        ownerName: ownerName.text,
+        vin: vin.text,
+      );
+      if (vehicle == null) {
+        if (mounted) {
+          await showErrorDialog(
+            context,
+            'Vehicle details could not be verified. Please check all details and try again.',
+            title: 'Vehicle verification failed',
+          );
+        }
+        return;
+      }
+
+      User? user = authService.currentUser;
+      if (signup != null &&
+          user?.email?.toLowerCase() != signup.email.toLowerCase()) {
+        if (user != null) {
+          throw FirebaseAuthException(
+            code: 'signup-session-mismatch',
+            message: 'Please sign in again to continue onboarding.',
+          );
+        }
+        final password = signup.password;
+        if (password == null) {
+          throw StateError('A password is required to create this account.');
+        }
+        user = (await authService.signUpWithEmail(
+          email: signup.email,
+          password: password,
+          name: signup.name,
+        )).user;
+        newlyCreatedUser = user;
+      }
+      if (user == null) {
+        throw FirebaseAuthException(
+          code: 'session-expired',
+          message: 'Your sign-in session ended. Please log in again.',
+        );
+      }
+
+      final existingProfile = await firestoreService.getUserProfile(user.uid);
+      if (existingProfile == null) {
+        final profileName = signup?.name.trim().isNotEmpty == true
+            ? signup!.name.trim()
+            : user.displayName?.trim();
+        if (profileName == null || profileName.isEmpty) {
+          throw StateError(
+            'A profile name is required to finish registration.',
+          );
+        }
+        await firestoreService.createUserProfile(
+          uid: user.uid,
+          name: profileName,
+          email: user.email ?? signup?.email ?? '',
+          phone: signup?.mobile ?? '',
+          vehicle: vehicle,
+        );
+        profileCreated = true;
+      } else if (existingProfile.vehicleId != vehicle.id) {
+        throw StateError(
+          'This account is already registered to another vehicle.',
+        );
+      }
+      final registeredVehicle = await firestoreService.getVehicleById(
+        vehicle.id,
+      );
+      if (registeredVehicle == null) {
+        throw StateError(
+          'The verified vehicle is no longer active or could not be loaded.',
+        );
+      }
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(
+          builder: (_) => BluetoothScanningPage(vehicle: registeredVehicle),
+        ),
+        (route) => false,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Vehicle registration failed: $error\n$stackTrace');
+      if (newlyCreatedUser != null && !profileCreated) {
+        try {
+          await newlyCreatedUser.delete();
+        } catch (_) {
+          // Keep the original registration error visible if rollback is blocked.
+        }
+      }
+      if (mounted) {
+        await showErrorDialog(
+          context,
+          'Vehicle verification failed: ${authService.messageFor(error)}\n\nDetails: $error',
+          title: 'Unable to register vehicle',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
   }
 
   @override
@@ -56,65 +158,38 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
             padding: const EdgeInsets.fromLTRB(28, 12, 28, 24),
             child: Column(
               children: [
-                const ScreenHeader(
-                  title: 'Pair Your Vehicle',
-                  subtitle:
-                      'Enter the details exactly as shown in your vehicle records.',
+                ScreenHeader(
+                  title: widget.pendingSignup == null
+                      ? 'Register Your Vehicle'
+                      : 'Verify Your Vehicle',
+                  subtitle: 'Enter the details of your pre-registered vehicle.',
                 ),
                 const SizedBox(height: 34),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: const Text(
-                    'Car Model',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.navy,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  initialValue: model,
-                  decoration: const InputDecoration(
-                    hintText: 'Select car model',
-                    prefixIcon: Icon(
-                      Icons.electric_car_outlined,
-                      color: AppTheme.mutedBlue,
-                    ),
-                  ),
-                  items: MockService.vehicles
-                      .map(
-                        (vehicle) => DropdownMenuItem(
-                          value: vehicle.model,
-                          child: Text(vehicle.model),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) => setState(() => model = value),
-                  validator: (value) =>
-                      value == null ? 'Select a car model' : null,
-                ),
-                const SizedBox(height: 18),
                 TextInputField(
                   controller: registration,
                   label: 'Registration Number',
-                  hint: 'Example: TN01AB1234',
+                  hint: 'Enter registration number',
                   icon: Icons.confirmation_number_outlined,
                   textCapitalization: TextCapitalization.characters,
-                  validator: (v) =>
-                      v == null ||
-                          !RegExp(
-                            r'^[A-Za-z]{2}[0-9]{1,2}[A-Za-z]{1,3}[0-9]{4}$',
-                          ).hasMatch(v.replaceAll(' ', ''))
-                      ? 'Enter a valid registration number'
+                  validator: (v) => v == null || v.trim().isEmpty
+                      ? 'Enter the registered vehicle number'
                       : null,
                 ),
                 const SizedBox(height: 18),
                 TextInputField(
-                  controller: owner,
-                  label: 'Registered Owner Name',
-                  hint: 'Enter owner name',
+                  controller: model,
+                  label: 'Vehicle Model',
+                  hint: 'Enter vehicle model',
+                  icon: Icons.electric_car_outlined,
+                  validator: (v) => v == null || v.trim().isEmpty
+                      ? 'Enter the vehicle model'
+                      : null,
+                ),
+                const SizedBox(height: 18),
+                TextInputField(
+                  controller: ownerName,
+                  label: 'Owner Name',
+                  hint: 'Enter registered owner name',
                   icon: Icons.person_outline,
                   validator: (v) => v == null || v.trim().isEmpty
                       ? 'Enter the registered owner name'
@@ -124,15 +199,19 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                 TextInputField(
                   controller: vin,
                   label: 'VIN',
-                  hint: 'Enter 17-character VIN',
+                  hint: 'Enter vehicle VIN',
                   icon: Icons.fingerprint,
                   textCapitalization: TextCapitalization.characters,
-                  validator: (v) => v == null || v.trim().length != 17
-                      ? 'VIN must be 17 characters'
+                  validator: (v) => v == null || v.trim().isEmpty
+                      ? 'Enter the vehicle VIN'
                       : null,
                 ),
                 const SizedBox(height: 30),
-                PrimaryButton(label: 'Verify Vehicle', onPressed: verify),
+                PrimaryButton(
+                  label: 'Verify and Pair Vehicle',
+                  onPressed: saveVehicleAndContinue,
+                  isLoading: isLoading,
+                ),
               ],
             ),
           ),

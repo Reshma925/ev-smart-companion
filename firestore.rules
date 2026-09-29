@@ -1,0 +1,73 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsUser(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function activeVehicle(vehicleId, registrationNumber) {
+      let path = /databases/$(database)/documents/vehicles/$(vehicleId);
+      return exists(path)
+        && get(path).data.isActive == true
+        && get(path).data.registrationNumber == registrationNumber;
+    }
+
+    function ownsVehicle(vehicleId) {
+      let userPath = /databases/$(database)/documents/users/$(request.auth.uid);
+      return signedIn()
+        && exists(userPath)
+        && get(userPath).data.vehicleId == vehicleId;
+    }
+
+    match /users/{uid} {
+      allow read: if ownsUser(uid);
+      allow create: if ownsUser(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.keys().hasAll([
+          'uid', 'name', 'email', 'phone', 'vehicleId',
+          'vehicleRegistrationNumber', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'name', 'email', 'phone', 'vehicleId',
+          'vehicleRegistrationNumber', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.email is string
+        && request.resource.data.phone is string
+        && request.resource.data.vehicleId is string
+        && request.resource.data.vehicleRegistrationNumber is string
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && activeVehicle(
+          request.resource.data.vehicleId,
+          request.resource.data.vehicleRegistrationNumber
+        );
+      allow update: if ownsUser(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.vehicleId == resource.data.vehicleId
+        && request.resource.data.vehicleRegistrationNumber
+          == resource.data.vehicleRegistrationNumber
+        && request.resource.data.name is string
+        && request.resource.data.email is string
+        && request.resource.data.phone is string
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'email', 'phone', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /vehicles/{vehicleId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+
+      match /telemetry/{telemetryId} {
+        allow read, create, update: if ownsVehicle(vehicleId);
+        allow delete: if false;
+      }
+    }
+  }
+}
