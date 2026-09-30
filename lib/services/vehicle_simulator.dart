@@ -4,39 +4,48 @@ import 'dart:developer' as developer;
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class VehicleData {
-  final double battery; // %
-  final double range; // km
-  final double batteryHealth; // %
-  final int healthScore; // 0-100
+  const VehicleData({
+    required this.battery,
+    required this.range,
+    required this.batteryHealth,
+    required this.healthScore,
+    required this.isCharging,
+    this.updatedAt,
+  });
+
+  final double battery;
+  final double range;
+  final double batteryHealth;
+  final int healthScore;
   final bool isCharging;
+  final DateTime? updatedAt;
 
-  VehicleData(
-    this.battery,
-    this.range,
-    this.batteryHealth,
-    this.healthScore,
-    this.isCharging,
-  );
+  factory VehicleData.fromMap(Map<String, dynamic> map) {
+    return VehicleData(
+      battery: (map['battery'] as num?)?.toDouble() ?? 0,
+      range: (map['range'] as num?)?.toDouble() ?? 0,
+      batteryHealth: (map['batteryHealth'] as num?)?.toDouble() ?? 0,
+      healthScore: (map['healthScore'] as num?)?.toInt() ?? 0,
+      isCharging: map['isCharging'] as bool? ?? false,
+      updatedAt: _readDate(map['updatedAt']),
+    );
+  }
 
-  // Turns the data saved in Firebase back into VehicleData
-  factory VehicleData.fromMap(Map<String, dynamic> m) => VehicleData(
-    (m['battery'] as num).toDouble(),
-    (m['range'] as num).toDouble(),
-    (m['batteryHealth'] as num).toDouble(),
-    (m['healthScore'] as num).toInt(),
-    m['isCharging'] as bool,
-  );
+  static DateTime? _readDate(Object? value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    return null;
+  }
 }
 
 class VehicleSimulator {
   VehicleSimulator({required String vehicleId})
-    : _doc = FirebaseFirestore.instance
-          .collection('vehicles')
-          .doc(vehicleId)
-          .collection('telemetry')
-          .doc('live');
+      : _doc = FirebaseFirestore.instance
+            .collection('vehicles')
+            .doc(vehicleId)
+            .collection('telemetry')
+            .doc('live');
 
-  // Telemetry is separated from the pre-registered vehicle identity document.
   final DocumentReference<Map<String, dynamic>> _doc;
   Timer? _timer;
   double _battery = 80;
@@ -44,7 +53,6 @@ class VehicleSimulator {
   bool _isCharging = false;
   static const double _maxRange = 300;
 
-  // Telemetry is sourced exclusively from the mapped vehicle's Firestore path.
   Stream<VehicleData> get stream => _doc
       .snapshots()
       .where((snap) {
@@ -58,8 +66,6 @@ class VehicleSimulator {
       })
       .map((snap) => VehicleData.fromMap(snap.data()!));
 
-  /// Generates development telemetry for this Firestore vehicle ID.
-  /// Vehicle identity is always fetched separately from `vehicles/{vehicleId}`.
   void start() {
     if (_timer != null) return;
     _timer = Timer.periodic(const Duration(seconds: 2), (_) async {
@@ -85,7 +91,6 @@ class VehicleSimulator {
           'updatedAt': FieldValue.serverTimestamp(),
         });
       } catch (error, stackTrace) {
-        // Preview telemetry can fail without changing registered vehicle data.
         developer.log(
           'Failed to write telemetry for vehicle ${_doc.parent.parent?.id}: $error',
           error: error,

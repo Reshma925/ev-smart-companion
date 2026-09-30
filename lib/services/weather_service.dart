@@ -35,6 +35,7 @@ class WeatherService {
         'rain',
         'weather_code',
         'wind_speed_10m',
+        'visibility',
       ].join(','),
       'timezone': 'auto',
     });
@@ -60,18 +61,23 @@ class WeatherService {
     void Function(WeatherLoadStage stage)? onStage,
   }) async {
     var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.deniedForever) {
+    if (kIsWeb && permission == LocationPermission.deniedForever) {
       throw WeatherPermissionException(permanentlyDenied: true, isWeb: kIsWeb);
     }
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.unableToDetermine) {
+    if (!kIsWeb && permission == LocationPermission.deniedForever) {
+      throw WeatherPermissionException(permanentlyDenied: true, isWeb: false);
+    }
+    if (!kIsWeb &&
+        (permission == LocationPermission.denied ||
+            permission == LocationPermission.unableToDetermine)) {
       onStage?.call(WeatherLoadStage.requestingPermission);
       permission = await Geolocator.requestPermission();
     }
-    if (permission == LocationPermission.deniedForever) {
+    if (!kIsWeb && permission == LocationPermission.deniedForever) {
       throw WeatherPermissionException(permanentlyDenied: true, isWeb: kIsWeb);
     }
-    if (permission != LocationPermission.whileInUse &&
+    if (!kIsWeb &&
+        permission != LocationPermission.whileInUse &&
         permission != LocationPermission.always) {
       throw WeatherPermissionException(permanentlyDenied: false, isWeb: kIsWeb);
     }
@@ -83,14 +89,28 @@ class WeatherService {
     }
 
     try {
-      onStage?.call(WeatherLoadStage.gettingLocation);
+      // Web geolocation prompts through getCurrentPosition itself. Calling
+      // requestPermission first loses browser error details and can mistake
+      // an unrequested browser prompt for a denial.
+      onStage?.call(
+        kIsWeb &&
+                (permission == LocationPermission.denied ||
+                    permission == LocationPermission.unableToDetermine)
+            ? WeatherLoadStage.requestingPermission
+            : WeatherLoadStage.gettingLocation,
+      );
       return await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.low,
           timeLimit: Duration(seconds: 12),
         ),
-      );
+      ).timeout(const Duration(seconds: 15));
     } on PermissionDeniedException {
+      if (kIsWeb &&
+          (permission == LocationPermission.denied ||
+              permission == LocationPermission.unableToDetermine)) {
+        throw WeatherPermissionException(permanentlyDenied: false, isWeb: true);
+      }
       throw WeatherPermissionException(
         permanentlyDenied: kIsWeb,
         isWeb: kIsWeb,
@@ -98,6 +118,10 @@ class WeatherService {
     } on LocationServiceDisabledException {
       throw const WeatherLocationException(
         'Location services are turned off. Turn them on to see local driving conditions.',
+      );
+    } on PositionUpdateException {
+      throw const WeatherLocationException(
+        'Your location is currently unavailable. Check that location services are enabled for this device and retry.',
       );
     } on TimeoutException {
       throw const WeatherLocationException(

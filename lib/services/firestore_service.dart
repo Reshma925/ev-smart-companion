@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
+import 'vehicle_simulator.dart';
 
 class FirestoreService {
   FirestoreService({FirebaseFirestore? firestore})
@@ -69,6 +70,85 @@ class FirestoreService {
     return profile;
   }
 
+  Stream<UserModel?> watchUserProfile(String uid) =>
+      _userDocument(uid).snapshots().map((snapshot) {
+        if (!snapshot.exists || snapshot.data() == null) return null;
+        final profile = UserModel.fromMap(snapshot.data()!);
+        if (profile.uid != uid) {
+          throw StateError(
+            'The Firestore user document UID does not match its path.',
+          );
+        }
+        return profile;
+      });
+
+  Future<void> updateUserProfile({
+    required String uid,
+    String? name,
+    String? phone,
+    String? city,
+    DateTime? dateOfBirth,
+    String? profileImageUrl,
+    String? preferredDrivingMode,
+    String? preferredChargingMode,
+    String? notificationPreference,
+    String? unitSystem,
+  }) async {
+    final updates = <String, dynamic>{'updatedAt': FieldValue.serverTimestamp()};
+
+    if (name != null) {
+      final normalizedName = name.trim();
+      if (normalizedName.isEmpty) {
+        throw ArgumentError('Name cannot be empty.');
+      }
+      updates['name'] = normalizedName;
+    }
+
+    if (phone != null) {
+      updates['phone'] = phone.trim();
+    }
+
+    if (city != null) {
+      updates['city'] = city.trim();
+    }
+
+    if (dateOfBirth != null) {
+      updates['dateOfBirth'] = Timestamp.fromDate(dateOfBirth);
+    }
+
+    if (profileImageUrl != null) {
+      updates['profileImageUrl'] = profileImageUrl.trim();
+    }
+
+    if (preferredDrivingMode != null) {
+      updates['preferredDrivingMode'] = preferredDrivingMode.trim();
+    }
+
+    if (preferredChargingMode != null) {
+      updates['preferredChargingMode'] = preferredChargingMode.trim();
+    }
+
+    if (notificationPreference != null) {
+      updates['notificationPreference'] = notificationPreference.trim();
+    }
+
+    if (unitSystem != null) {
+      updates['unitSystem'] = unitSystem.trim();
+    }
+
+    await _userDocument(uid).update(updates);
+  }
+
+  Future<void> updateProfileImageUrl({
+    required String uid,
+    required String url,
+  }) async {
+    await _userDocument(uid).update({
+      'profileImageUrl': url.trim(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
   Future<void> createUserProfile({
     required String uid,
     required String name,
@@ -104,6 +184,43 @@ class FirestoreService {
     final vehicle = Vehicle.fromMap(snapshot.data()!, id: snapshot.id);
     return vehicle.isActive ? vehicle : null;
   }
+
+  Future<Vehicle?> getVehicleRecordById(String vehicleId) async {
+    final snapshot = await _firestore
+        .collection('vehicles')
+        .doc(vehicleId)
+        .get();
+    if (!snapshot.exists || snapshot.data() == null) return null;
+    return Vehicle.fromMap(snapshot.data()!, id: snapshot.id);
+  }
+
+  Stream<Vehicle?> watchVehicleById(String vehicleId) => _firestore
+      .collection('vehicles')
+      .doc(vehicleId)
+      .snapshots()
+      .map((snapshot) {
+        if (!snapshot.exists || snapshot.data() == null) return null;
+        return Vehicle.fromMap(snapshot.data()!, id: snapshot.id);
+      });
+
+  Stream<VehicleData?> watchVehicleTelemetry(String vehicleId) => _firestore
+      .collection('vehicles')
+      .doc(vehicleId)
+      .collection('telemetry')
+      .doc('live')
+      .snapshots()
+      .map((snapshot) {
+        final data = snapshot.data();
+        if (data == null ||
+            data['battery'] is! num ||
+            data['range'] is! num ||
+            data['batteryHealth'] is! num ||
+            data['healthScore'] is! num ||
+            data['isCharging'] is! bool) {
+          return null;
+        }
+        return VehicleData.fromMap(data);
+      });
 
   Future<Vehicle?> getCurrentUserVehicle(String uid) async {
     final profile = await getUserProfile(uid);

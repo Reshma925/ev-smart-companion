@@ -1,29 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 
-class ServiceTask {
-  final String id;
-  final String name;
-  final IconData icon;
-  final int everyMonths;
-  final int sampleDaysAgo; // used only to create sample data the first time
-  const ServiceTask(this.id, this.name, this.icon, this.everyMonths, this.sampleDaysAgo);
-}
-
-const tasks = [
-  ServiceTask('tyres', 'Tyre Rotation', Icons.tire_repair, 6, 200),
-  ServiceTask('brakes', 'Brake Inspection', Icons.car_repair, 12, 340),
-  ServiceTask('cabinFilter', 'Cabin Air Filter', Icons.air, 12, 100),
-  ServiceTask('coolant', 'Battery Coolant Check', Icons.ac_unit, 24, 400),
-  ServiceTask('battery12v', '12V Battery Check', Icons.battery_charging_full, 12, 380),
-  ServiceTask('wipers', 'Wiper Blades', Icons.water_drop_outlined, 12, 150),
-  ServiceTask('software', 'Software Update', Icons.system_update, 6, 30),
-];
-
 class MaintenancePage extends StatefulWidget {
   const MaintenancePage({super.key, required this.vehicle});
+
   final Vehicle vehicle;
 
   @override
@@ -31,174 +14,475 @@ class MaintenancePage extends StatefulWidget {
 }
 
 class _MaintenancePageState extends State<MaintenancePage> {
-  // Each vehicle has its own maintenance records in Firebase
-  late final col = FirebaseFirestore.instance
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  CollectionReference<Map<String, dynamic>> get _collection => _firestore
       .collection('vehicles')
-      .doc(widget.vehicle.registrationNumber)
+      .doc(widget.vehicle.id)
       .collection('maintenance');
-  late final stream = col.snapshots();
 
-  @override
-  void initState() {
-    super.initState();
-    addSampleDataIfEmpty();
-  }
+  Stream<QuerySnapshot<Map<String, dynamic>>> get _maintenanceStream => _collection
+      .orderBy('serviceDate', descending: true)
+      .snapshots();
 
-  // Creates sample "last done" dates the first time this vehicle opens the page
-  Future<void> addSampleDataIfEmpty() async {
-    final existing = await col.limit(1).get();
-    if (existing.docs.isNotEmpty) return;
-    final now = DateTime.now();
-    for (final t in tasks) {
-      await col.doc(t.id).set({
-        'lastDone': Timestamp.fromDate(now.subtract(Duration(days: t.sampleDaysAgo))),
-      });
-    }
-  }
+  Future<void> _addRecord() async {
+    final formKey = GlobalKey<FormState>();
+    final serviceTypeController = TextEditingController();
+    final serviceCenterController = TextEditingController();
+    final costController = TextEditingController();
+    final notesController = TextEditingController();
+    DateTime? serviceDate;
+    DateTime? nextServiceDate;
 
-  // Saves today's date when the user taps Done
-  Future<void> markDone(ServiceTask t) async {
-    await col.doc(t.id).set({'lastDone': Timestamp.now()});
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Add maintenance record'),
+          content: SingleChildScrollView(
+            child: Form(
+              key: formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    controller: serviceTypeController,
+                    decoration: const InputDecoration(labelText: 'Service type'),
+                    validator: (value) =>
+                        (value == null || value.trim().isEmpty)
+                            ? 'Enter a service type.'
+                            : null,
+                  ),
+                  const SizedBox(height: 12),
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: dialogContext,
+                        initialDate: DateTime.now(),
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) {
+                        serviceDate = picked;
+                        setDialogState(() {});
+                      }
+                    },
+                    child: InputDecorator(
+                      decoration: const InputDecoration(labelText: 'Service date'),
+                      child: Text(
+                        serviceDate == null
+                            ? 'Select date'
+                            : '${serviceDate!.day}/${serviceDate!.month}/${serviceDate!.year}',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: dialogContext,
+                        initialDate: DateTime.now().add(const Duration(days: 30)),
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) {
+                        nextServiceDate = picked;
+                        setDialogState(() {});
+                      }
+                    },
+                    child: InputDecorator(
+                      decoration: const InputDecoration(labelText: 'Next service date'),
+                      child: Text(
+                        nextServiceDate == null
+                            ? 'Select date'
+                            : '${nextServiceDate!.day}/${nextServiceDate!.month}/${nextServiceDate!.year}',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: serviceCenterController,
+                    decoration: const InputDecoration(labelText: 'Service center'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: costController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Cost (optional)'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: notesController,
+                    minLines: 3,
+                    maxLines: 4,
+                    decoration: const InputDecoration(labelText: 'Notes'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (formKey.currentState!.validate() && serviceDate != null) {
+                  Navigator.pop(dialogContext, true);
+                } else if (serviceDate == null) {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(content: Text('Please choose a service date.')),
+                  );
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final record = {
+      'serviceType': serviceTypeController.text.trim(),
+      'serviceDate': Timestamp.fromDate(serviceDate!),
+      'nextServiceDate': nextServiceDate == null ? null : Timestamp.fromDate(nextServiceDate!),
+      'serviceCenter': serviceCenterController.text.trim(),
+      'cost': costController.text.trim(),
+      'notes': notesController.text.trim(),
+      'status': 'Completed',
+      'createdAt': FieldValue.serverTimestamp(),
+    };
+
+    await _collection.add(record);
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('${t.name} marked as done')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Maintenance record saved.')),
+    );
   }
 
-  String formatDate(DateTime d) => '${d.day}/${d.month}/${d.year}';
+  void _showRecordDetails(Map<String, dynamic> data) {
+    final serviceDate = data['serviceDate'] is Timestamp
+        ? (data['serviceDate'] as Timestamp).toDate()
+        : null;
+    final nextServiceDate = data['nextServiceDate'] is Timestamp
+        ? (data['nextServiceDate'] as Timestamp).toDate()
+        : null;
+
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                (data['serviceType'] as String?) ?? 'Maintenance',
+                style: const TextStyle(
+                  color: AppTheme.navy,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (serviceDate != null)
+                _DetailRow(
+                  label: 'Service date',
+                  value: '${serviceDate.day}/${serviceDate.month}/${serviceDate.year}',
+                ),
+              if (nextServiceDate != null)
+                _DetailRow(
+                  label: 'Next service',
+                  value: '${nextServiceDate.day}/${nextServiceDate.month}/${nextServiceDate.year}',
+                ),
+              if ((data['serviceCenter'] as String? ?? '').isNotEmpty)
+                _DetailRow(label: 'Service center', value: data['serviceCenter'] as String),
+              if ((data['cost'] as String? ?? '').isNotEmpty)
+                _DetailRow(label: 'Cost', value: data['cost'] as String),
+              if ((data['notes'] as String? ?? '').isNotEmpty)
+                _DetailRow(label: 'Notes', value: data['notes'] as String),
+              _DetailRow(label: 'Status', value: (data['status'] as String?) ?? 'Completed'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Maintenance')),
+      appBar: AppBar(
+        title: const Text('Maintenance'),
+        backgroundColor: AppTheme.background,
+      ),
+      backgroundColor: AppTheme.background,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addRecord,
+        icon: const Icon(Icons.add_rounded),
+        label: const Text('Add maintenance'),
+      ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: stream,
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return Center(child: Text('Could not load maintenance: ${snap.error}'));
+        stream: _maintenanceStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return _EmptyState(
+              icon: Icons.cloud_off_rounded,
+              title: 'Unable to load maintenance records',
+              message: 'Please check your connection and try again.',
+              actionLabel: 'Retry',
+              onAction: () => setState(() {}),
+            );
           }
-          if (!snap.hasData || snap.data!.docs.isEmpty) {
+          if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
 
-          // Last done date for each task, read from Firebase
-          final lastDone = {
-            for (final doc in snap.data!.docs)
-              doc.id: (doc.data()['lastDone'] as Timestamp).toDate(),
-          };
-          final now = DateTime.now();
-          var overdue = 0;
-          var dueSoon = 0;
-
-          final cards = <Widget>[];
-          for (final t in tasks) {
-            final last = lastDone[t.id] ?? now;
-            final due = DateTime(last.year, last.month + t.everyMonths, last.day);
-            final daysLeft = due.difference(now).inDays;
-
-            Color color;
-            String status;
-            if (daysLeft < 0) {
-              overdue++;
-              color = Colors.red;
-              status = 'Overdue by ${-daysLeft} days';
-            } else if (daysLeft <= 30) {
-              dueSoon++;
-              color = Colors.orange;
-              status = 'Due in $daysLeft days';
-            } else {
-              color = Colors.green;
-              status = 'Due in $daysLeft days';
-            }
-
-            cards.add(Card(
-              margin: const EdgeInsets.only(bottom: 10),
-              child: ListTile(
-                leading: Icon(t.icon, color: AppTheme.blue),
-                title: Text(t.name,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w600, color: AppTheme.navy)),
-                subtitle: Text(
-                  'Every ${t.everyMonths} months · Last done ${formatDate(last)}\n$status',
-                ),
-                isThreeLine: true,
-                trailing: TextButton(
-                  onPressed: () => markDone(t),
-                  child: const Text('Done'),
-                ),
-                shape: Border(left: BorderSide(color: color, width: 5)),
-              ),
-            ));
+          final records = snapshot.data!.docs;
+          if (records.isEmpty) {
+            return _EmptyState(
+              icon: Icons.build_rounded,
+              title: 'No maintenance records yet',
+              message: 'Add the first service record for this vehicle to begin tracking maintenance history.',
+              actionLabel: 'Add record',
+              onAction: _addRecord,
+            );
           }
 
           return ListView(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 96),
             children: [
-              // Summary
               Container(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(18),
                 decoration: BoxDecoration(
-                  color: overdue > 0 ? const Color(0xFFFFEBEB) : const Color(0xFFE5F8EF),
-                  borderRadius: BorderRadius.circular(14),
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: const Color(0xFFE5EBF0)),
                 ),
-                child: Row(
-                  children: [
-                    Icon(overdue > 0 ? Icons.warning_amber_rounded : Icons.check_circle,
-                        color: overdue > 0 ? Colors.red : Colors.green),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        overdue == 0 && dueSoon == 0
-                            ? 'All maintenance is up to date'
-                            : '$overdue overdue · $dueSoon due soon',
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w700, color: AppTheme.navy),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(widget.vehicle.model,
-                  style: const TextStyle(color: AppTheme.mutedBlue)),
-              const SizedBox(height: 16),
-
-              // Service checklist
-              ...cards,
-
-              // Learning card
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE8F1FB),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Column(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(children: [
-                      Icon(Icons.school, color: AppTheme.blue),
-                      SizedBox(width: 8),
-                      Text('Why EVs need less maintenance',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w700, color: AppTheme.navy)),
-                    ]),
-                    SizedBox(height: 8),
                     Text(
-                      'Electric vehicles have no engine oil, spark plugs, or '
-                      'gearbox oil to change, and far fewer moving parts. '
-                      'Regenerative braking also means the brake pads wear out '
-                      'more slowly. Tyres, brakes, the cabin filter, and battery '
-                      'cooling still need regular checks.',
-                      style: TextStyle(color: AppTheme.navy, height: 1.4),
+                      widget.vehicle.model,
+                      style: const TextStyle(
+                        color: AppTheme.navy,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.vehicle.registrationNumber.isEmpty
+                          ? 'Registration not provided'
+                          : widget.vehicle.registrationNumber,
+                      style: const TextStyle(color: AppTheme.mutedBlue),
                     ),
                   ],
                 ),
               ),
+              const SizedBox(height: 16),
+              const Text(
+                'Maintenance timeline',
+                style: TextStyle(
+                  color: AppTheme.navy,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              ...records.map((doc) {
+                final data = doc.data();
+                final serviceType = (data['serviceType'] as String?) ?? 'Service';
+                final status = (data['status'] as String?) ?? 'Completed';
+                final serviceDate = data['serviceDate'] is Timestamp
+                    ? (data['serviceDate'] as Timestamp).toDate()
+                    : null;
+                final nextServiceDate = data['nextServiceDate'] is Timestamp
+                    ? (data['nextServiceDate'] as Timestamp).toDate()
+                    : null;
+                final color = status.toLowerCase().contains('upcoming')
+                    ? const Color(0xFF2388D9)
+                    : const Color(0xFF1EA76A);
+
+                return InkWell(
+                  onTap: () => _showRecordDetails(data),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFE5EBF0)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            Icons.build_rounded,
+                            color: color,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                serviceType,
+                                style: const TextStyle(
+                                  color: AppTheme.navy,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 5),
+                              if (serviceDate != null)
+                                Text(
+                                  'Service date: ${serviceDate.day}/${serviceDate.month}/${serviceDate.year}',
+                                  style: const TextStyle(
+                                    color: AppTheme.mutedBlue,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              if (nextServiceDate != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    'Next service: ${nextServiceDate.day}/${nextServiceDate.month}/${nextServiceDate.year}',
+                                    style: const TextStyle(
+                                      color: AppTheme.mutedBlue,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            status,
+                            style: TextStyle(
+                              color: color,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }),
             ],
           );
         },
       ),
     );
   }
+}
+
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: AppTheme.mutedBlue,
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            color: AppTheme.navy,
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({
+    required this.icon,
+    required this.title,
+    required this.message,
+    required this.actionLabel,
+    required this.onAction,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+  final String actionLabel;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(26),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: AppTheme.mutedBlue, size: 42),
+          const SizedBox(height: 14),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: AppTheme.navy,
+              fontSize: 21,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppTheme.mutedBlue, height: 1.5),
+          ),
+          const SizedBox(height: 18),
+          FilledButton.icon(
+            onPressed: onAction,
+            icon: const Icon(Icons.add_rounded),
+            label: Text(actionLabel),
+          ),
+        ],
+      ),
+    ),
+  );
 }

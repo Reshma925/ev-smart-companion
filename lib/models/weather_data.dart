@@ -4,6 +4,7 @@ class WeatherData {
     required this.feelsLikeC,
     required this.humidityPercent,
     required this.windSpeedKmh,
+    required this.visibilityMeters,
     required this.precipitationMm,
     required this.rainMm,
     required this.weatherCode,
@@ -16,6 +17,7 @@ class WeatherData {
   final double feelsLikeC;
   final int humidityPercent;
   final double windSpeedKmh;
+  final double? visibilityMeters;
   final double precipitationMm;
   final double rainMm;
   final int weatherCode;
@@ -40,6 +42,11 @@ class WeatherData {
       throw FormatException('Weather API field "$key" is missing or invalid.');
     }
 
+    double? optionalNumber(String key) {
+      final value = current[key];
+      return value is num ? value.toDouble() : null;
+    }
+
     final rawTime = current['time'];
     final observedAt = rawTime is String
         ? DateTime.tryParse(rawTime) ?? DateTime.now()
@@ -50,6 +57,7 @@ class WeatherData {
       feelsLikeC: number('apparent_temperature'),
       humidityPercent: number('relative_humidity_2m').round(),
       windSpeedKmh: number('wind_speed_10m'),
+      visibilityMeters: optionalNumber('visibility'),
       precipitationMm: number('precipitation'),
       rainMm: number('rain'),
       weatherCode: number('weather_code').round(),

@@ -22,6 +22,9 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
   bool _permanentlyDenied = false;
   bool _waitingForSettings = false;
   bool _hasLoadedWeather = false;
+  bool _refreshing = true;
+  WeatherData? _lastWeather;
+  Object? _lastError;
 
   @override
   void initState() {
@@ -59,17 +62,24 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
       );
       _hasLoadedWeather = true;
       _permanentlyDenied = false;
+      _lastWeather = data;
+      _lastError = null;
       return data;
     } catch (error) {
+      _lastError = error;
       if (error is WeatherPermissionException) {
         _permanentlyDenied = error.permanentlyDenied;
       }
       rethrow;
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
     }
   }
 
   void _refresh() {
+    if (_refreshing) return;
     setState(() {
+      _refreshing = true;
       _stage = WeatherLoadStage.checkingPermission;
       _weather = _loadWeather();
     });
@@ -86,7 +96,7 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
     return FutureBuilder<WeatherData>(
       future: _weather,
       builder: (context, snapshot) {
-        final data = snapshot.data;
+        final data = snapshot.data ?? _lastWeather;
         return Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -118,24 +128,38 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
                   ),
                   IconButton(
                     tooltip: 'Refresh weather',
-                    onPressed:
-                        snapshot.connectionState == ConnectionState.waiting
-                        ? null
-                        : _refresh,
-                    icon: const Icon(Icons.refresh_rounded, size: 19),
+                    onPressed: _refreshing ? null : _refresh,
+                    icon: _refreshing
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh_rounded, size: 19),
                     visualDensity: VisualDensity.compact,
                   ),
                 ],
               ),
-              if (snapshot.connectionState == ConnectionState.waiting &&
-                  data == null)
+              if (_refreshing && data == null)
                 _WeatherLoading(label: _weatherStageLabel(_stage))
-              else if (snapshot.hasError || data == null)
+              else if (data != null) ...[
+                _WeatherContent(data: data),
+                if (_refreshing) ...[
+                  const SizedBox(height: 12),
+                  _WeatherLoading(label: _weatherStageLabel(_stage)),
+                ] else if (_lastError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Refresh failed: ${_messageForError(_lastError)}',
+                    style: const TextStyle(color: AppTheme.mutedBlue),
+                  ),
+                ],
+              ] else if (snapshot.hasError || _lastError != null)
                 _WeatherError(
-                  message: _messageForError(snapshot.error),
+                  message: _messageForError(snapshot.error ?? _lastError),
                   loadingStage: _stage,
                   permissionDenied:
-                      snapshot.error is WeatherPermissionException,
+                      (snapshot.error ?? _lastError)
+                          is WeatherPermissionException,
                   permanentlyDenied: _permanentlyDenied,
                   isWeb: widget.service.isWeb,
                   onRetry: _refresh,
@@ -144,7 +168,7 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
                       : null,
                 )
               else
-                _WeatherContent(data: data),
+                _WeatherLoading(label: _weatherStageLabel(_stage)),
             ],
           ),
         );
@@ -156,10 +180,12 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
     if (error is WeatherPermissionException) {
       if (error.permanentlyDenied) {
         return error.isWeb
-            ? 'Location access is blocked for this site. Allow location in your browser’s site settings, then retry.'
+            ? 'Location permission is blocked. Enable it for localhost in your browser settings, then retry.'
             : 'Location permission is disabled for this app. Open app settings and allow location to see local driving conditions.';
       }
-      return 'Location permission is required to show local driving conditions.';
+      return error.isWeb
+          ? 'Location permission denied. Select Retry and allow location access in your browser.'
+          : 'Location permission is required to show local driving conditions.';
     }
     if (error is WeatherServiceException) return error.message;
     return 'Weather could not be loaded: $error';
@@ -359,6 +385,12 @@ class _WeatherContent extends StatelessWidget {
               icon: Icons.air_rounded,
               label: 'Wind ${data.windSpeedKmh.round()} km/h',
             ),
+            if (data.visibilityMeters != null)
+              _WeatherMetric(
+                icon: Icons.visibility_outlined,
+                label:
+                    'Visibility ${(data.visibilityMeters! / 1000).toStringAsFixed(1)} km',
+              ),
             _WeatherMetric(
               icon: Icons.umbrella_outlined,
               label: data.rainMm > 0

@@ -8,6 +8,13 @@ class UserModel {
     this.phone = '',
     this.vehicleId,
     this.vehicleRegistrationNumber = '',
+    this.profileImageUrl = '',
+    this.city = '',
+    this.dateOfBirth,
+    this.preferredDrivingMode = '',
+    this.preferredChargingMode = '',
+    this.notificationPreference = '',
+    this.unitSystem = '',
     this.createdAt,
     this.updatedAt,
   });
@@ -18,6 +25,13 @@ class UserModel {
   final String phone;
   final String? vehicleId;
   final String vehicleRegistrationNumber;
+  final String profileImageUrl;
+  final String city;
+  final DateTime? dateOfBirth;
+  final String preferredDrivingMode;
+  final String preferredChargingMode;
+  final String notificationPreference;
+  final String unitSystem;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -30,6 +44,18 @@ class UserModel {
       vehicleId: map['vehicleId'] as String?,
       vehicleRegistrationNumber:
           map['vehicleRegistrationNumber'] as String? ?? '',
+      profileImageUrl: map['profileImageUrl'] as String? ?? '',
+      city: map['city'] as String? ?? '',
+      dateOfBirth: _dateTimeFrom(
+        map['dateOfBirth'] ?? map['dob'],
+      ),
+      preferredDrivingMode:
+          map['preferredDrivingMode'] as String? ?? '',
+      preferredChargingMode:
+          map['preferredChargingMode'] as String? ?? '',
+      notificationPreference:
+          map['notificationPreference'] as String? ?? '',
+      unitSystem: map['unitSystem'] as String? ?? '',
       createdAt: _dateTimeFrom(map['createdAt']),
       updatedAt: _dateTimeFrom(map['updatedAt']),
     );

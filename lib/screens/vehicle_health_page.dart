@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../services/vehicle_simulator.dart';
 
 class VehicleHealthPage extends StatefulWidget {
   const VehicleHealthPage({super.key, required this.vehicle});
+
   final Vehicle vehicle;
 
   @override
@@ -12,188 +14,317 @@ class VehicleHealthPage extends StatefulWidget {
 }
 
 class _VehicleHealthPageState extends State<VehicleHealthPage> {
-  // Reads the same live data from Firebase that the dashboard shows
-  late final stream = VehicleSimulator(vehicleId: widget.vehicle.id).stream;
+  late final Stream<VehicleData> _telemetryStream = VehicleSimulator(
+    vehicleId: widget.vehicle.id,
+  ).stream;
 
-  // Sample tyre pressures in PSI (recommended: 33 to 36)
-  final tyres = {
-    'Front Left': 35,
-    'Front Right': 35,
-    'Rear Left': 34,
-    'Rear Right': 30,
-  };
+  String _scoreStatus(int score) {
+    if (score >= 85) return 'Excellent';
+    if (score >= 70) return 'Good';
+    if (score >= 50) return 'Needs attention';
+    return 'Critical';
+  }
 
-  String status(int score) => score >= 85
-      ? 'Excellent'
-      : score >= 70
-      ? 'Good'
-      : 'Needs attention';
+  Color _scoreColor(int score) {
+    if (score >= 85) return const Color(0xFF1EA76A);
+    if (score >= 70) return AppTheme.blue;
+    if (score >= 50) return const Color(0xFFE4A22F);
+    return const Color(0xFFD93C4E);
+  }
 
-  Color statusColor(int score) => score >= 85
-      ? Colors.green
-      : score >= 70
-      ? AppTheme.blue
-      : Colors.orange;
+  void _showMetricDetails(
+    String title,
+    String value,
+    String description,
+    String status,
+    IconData icon,
+    Color color,
+  ) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(icon, color: color),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        color: AppTheme.navy,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              Text(
+                value,
+                style: const TextStyle(
+                  color: AppTheme.navy,
+                  fontSize: 30,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  status,
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                description,
+                style: const TextStyle(
+                  color: AppTheme.mutedBlue,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Vehicle Health')),
+      appBar: AppBar(
+        title: const Text('Vehicle health'),
+        backgroundColor: AppTheme.background,
+      ),
+      backgroundColor: AppTheme.background,
       body: StreamBuilder<VehicleData>(
-        stream: stream,
+        stream: _telemetryStream,
         builder: (context, snap) {
+          if (snap.hasError) {
+            return _LoadState(
+              title: 'Unable to load vehicle health',
+              message: 'Live telemetry is temporarily unavailable. Please retry.',
+              onRetry: () => setState(() {}),
+            );
+          }
           if (!snap.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
-          final d = snap.data!;
-          final temp = d.isCharging ? 38.0 : 31.0; // simple estimate
-          final lowTyres = tyres.entries.where((t) => t.value < 33).toList();
+
+          final data = snap.data!;
+          final score = data.healthScore.clamp(0, 100);
+          final status = _scoreStatus(score);
+          final color = _scoreColor(score);
+          final lastUpdated = data.updatedAt == null
+              ? 'Not available'
+              : '${MaterialLocalizations.of(context).formatMediumDate(data.updatedAt!.toLocal())} • ${TimeOfDay.fromDateTime(data.updatedAt!.toLocal()).format(context)}';
+
+          final metrics = [
+            _MetricCard(
+              title: 'Battery health',
+              value: '${data.batteryHealth.toStringAsFixed(0)}%',
+              status: data.batteryHealth >= 80 ? 'Good' : 'Needs attention',
+              icon: Icons.battery_charging_full_rounded,
+              color: data.batteryHealth >= 80 ? const Color(0xFF1EA76A) : const Color(0xFFE4A22F),
+              description: 'Battery health shows how much of the original capacity remains. A healthy battery supports better range and longer EV life.',
+              onTap: () => _showMetricDetails(
+                'Battery health',
+                '${data.batteryHealth.toStringAsFixed(0)}%',
+                'Battery health shows how much of the original capacity remains. A healthy battery supports better range and longer EV life.',
+                data.batteryHealth >= 80 ? 'Good' : 'Needs attention',
+                Icons.battery_charging_full_rounded,
+                data.batteryHealth >= 80 ? const Color(0xFF1EA76A) : const Color(0xFFE4A22F),
+              ),
+            ),
+            _MetricCard(
+              title: 'Charging system',
+              value: data.isCharging ? 'Charging' : 'Standby',
+              status: data.isCharging ? 'Active' : 'Normal',
+              icon: Icons.electric_bolt_rounded,
+              color: data.isCharging ? const Color(0xFF2388D9) : const Color(0xFF1EA76A),
+              description: 'The charging system is currently reporting whether the vehicle is actively charging or waiting in standby mode.',
+              onTap: () => _showMetricDetails(
+                'Charging system',
+                data.isCharging ? 'Charging' : 'Standby',
+                'The charging system is currently reporting whether the vehicle is actively charging or waiting in standby mode.',
+                data.isCharging ? 'Active' : 'Normal',
+                Icons.electric_bolt_rounded,
+                data.isCharging ? const Color(0xFF2388D9) : const Color(0xFF1EA76A),
+              ),
+            ),
+            _MetricCard(
+              title: 'Vehicle system',
+              value: '${data.healthScore}/100',
+              status: status,
+              icon: Icons.directions_car_rounded,
+              color: color,
+              description: 'This overall health score combines current battery condition, EV charge level, and live vehicle status into a simple overview.',
+              onTap: () => _showMetricDetails(
+                'Vehicle system',
+                '${data.healthScore}/100',
+                'This overall health score combines current battery condition, EV charge level, and live vehicle status into a simple overview.',
+                status,
+                Icons.directions_car_rounded,
+                color,
+              ),
+            ),
+          ];
 
           return ListView(
             padding: const EdgeInsets.all(20),
             children: [
-              // Health score gauge
-              Center(
-                child: SizedBox(
-                  width: 160,
-                  height: 160,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      CircularProgressIndicator(
-                        value: d.healthScore / 100,
-                        strokeWidth: 14,
-                        color: statusColor(d.healthScore),
-                        backgroundColor: Colors.grey.shade200,
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(color: const Color(0xFFE5EBF0)),
+                ),
+                child: Column(
+                  children: [
+                    SizedBox(
+                      width: 172,
+                      height: 172,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CircularProgressIndicator(
+                            value: score / 100,
+                            strokeWidth: 14,
+                            color: color,
+                            backgroundColor: const Color(0xFFEAF0F7),
+                          ),
+                          Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  '${score.round()}',
+                                  style: const TextStyle(
+                                    color: AppTheme.navy,
+                                    fontSize: 42,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Text(
+                                  '/ 100',
+                                  style: TextStyle(
+                                    color: AppTheme.mutedBlue,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
-                      Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              '${d.healthScore}',
-                              style: const TextStyle(
-                                fontSize: 38,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.navy,
-                              ),
-                            ),
-                            Text(
-                              status(d.healthScore),
-                              style: TextStyle(
-                                color: statusColor(d.healthScore),
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
+                    ),
+                    const SizedBox(height: 10),
+                    text(widget.vehicle.model, 20, FontWeight.w700, AppTheme.navy),
+                    const SizedBox(height: 4),
+                    text(
+                      widget.vehicle.registrationNumber.isEmpty
+                          ? 'Registration not provided'
+                          : widget.vehicle.registrationNumber,
+                      13,
+                      FontWeight.w500,
+                      AppTheme.mutedBlue,
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        status,
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Center(
-                child: Text(
-                  widget.vehicle.model,
-                  style: const TextStyle(color: AppTheme.mutedBlue),
-                ),
-              ),
-
-              // Battery
-              sectionTitle('Battery'),
-              healthRow(
-                Icons.favorite_outline,
-                'Battery Health',
-                '${d.batteryHealth.toStringAsFixed(1)}%',
-                d.batteryHealth >= 80,
-              ),
-              healthRow(
-                Icons.battery_std,
-                'Charge Level',
-                '${d.battery.toStringAsFixed(0)}%',
-                d.battery > 20,
-              ),
-              healthRow(
-                Icons.thermostat,
-                'Battery Temperature',
-                '${temp.toStringAsFixed(0)} °C',
-                temp < 40,
-              ),
-              healthRow(
-                Icons.power,
-                'Charging',
-                d.isCharging ? 'Charging' : 'Not charging',
-                true,
-              ),
-
-              // Tyre Pressure
-              sectionTitle('Tyre Pressure'),
-              for (final t in tyres.entries)
-                healthRow(
-                  Icons.tire_repair,
-                  t.key,
-                  '${t.value} PSI',
-                  t.value >= 33,
-                ),
-              if (lowTyres.isNotEmpty)
-                Container(
-                  margin: const EdgeInsets.only(top: 4),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFF4E5),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    '${lowTyres.map((t) => t.key).join(', ')} tyre pressure is low. '
-                    'Low tyre pressure increases rolling resistance and reduces your range.',
-                    style: const TextStyle(color: Colors.brown),
-                  ),
-                ),
-
-              // Components
-              sectionTitle('Components'),
-              healthRow(Icons.electric_bolt, 'Electric Motor', 'Normal', true),
-              healthRow(Icons.car_repair, 'Brakes', 'Normal', true),
-              healthRow(Icons.ac_unit, 'Cooling System', 'Normal', true),
-              healthRow(
-                Icons.battery_charging_full,
-                '12V Auxiliary Battery',
-                'Normal',
-                true,
-              ),
-
-              // Learning card
-              const SizedBox(height: 20),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE8F1FB),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+                    ),
+                    const SizedBox(height: 18),
                     Row(
                       children: [
-                        Icon(Icons.school, color: AppTheme.blue),
-                        SizedBox(width: 8),
-                        Text(
-                          'What is battery health?',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.navy,
+                        const Icon(Icons.schedule_rounded, color: AppTheme.mutedBlue),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Last updated: $lastUpdated',
+                            style: const TextStyle(
+                              color: AppTheme.mutedBlue,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
                       ],
                     ),
-                    SizedBox(height: 8),
-                    Text(
-                      'Battery health shows how much energy your battery can hold '
-                      'compared to when it was new. It drops slowly as the battery '
-                      'ages. Avoiding frequent fast charging, extreme heat, and '
-                      'keeping the charge between 20% and 80% helps it last longer.',
-                      style: TextStyle(color: AppTheme.navy, height: 1.4),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 22),
+              const Text(
+                'Health overview',
+                style: TextStyle(
+                  color: AppTheme.navy,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              ...metrics.map((metric) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: metric,
+                  )),
+              const SizedBox(height: 18),
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEAF4FF),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.info_outline_rounded, color: AppTheme.blue),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'The health score uses the latest live telemetry from your vehicle. Values update automatically as Firestore telemetry changes.',
+                        style: const TextStyle(
+                          color: AppTheme.navy,
+                          height: 1.5,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -205,49 +336,148 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
     );
   }
 
-  Widget sectionTitle(String title) => Padding(
-    padding: const EdgeInsets.only(top: 24, bottom: 8),
-    child: Text(
-      title,
-      style: const TextStyle(
-        fontSize: 18,
-        fontWeight: FontWeight.w700,
-        color: AppTheme.navy,
-      ),
-    ),
-  );
+  Widget text(String value, double size, FontWeight weight, Color color) =>
+      Text(
+        value,
+        style: TextStyle(
+          color: color,
+          fontSize: size,
+          fontWeight: weight,
+        ),
+      );
+}
 
-  Widget healthRow(IconData icon, String label, String value, bool ok) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFD9E0E8)),
-      ),
-      child: Row(
+class _LoadState extends StatelessWidget {
+  const _LoadState({
+    required this.title,
+    required this.message,
+    required this.onRetry,
+  });
+
+  final String title;
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: AppTheme.blue),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(label, style: const TextStyle(color: AppTheme.navy)),
-          ),
+          Icon(Icons.cloud_off_rounded, color: AppTheme.mutedBlue, size: 42),
+          const SizedBox(height: 16),
           Text(
-            value,
+            title,
             style: const TextStyle(
-              fontWeight: FontWeight.w700,
               color: AppTheme.navy,
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(width: 10),
-          Icon(
-            ok ? Icons.check_circle : Icons.warning_amber_rounded,
-            color: ok ? Colors.green : Colors.orange,
-            size: 20,
+          const SizedBox(height: 8),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppTheme.mutedBlue, height: 1.5),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Retry'),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
+
+class _MetricCard extends StatelessWidget {
+  const _MetricCard({
+    required this.title,
+    required this.value,
+    required this.status,
+    required this.icon,
+    required this.color,
+    required this.description,
+    required this.onTap,
+  });
+
+  final String title;
+  final String value;
+  final String status;
+  final IconData icon;
+  final Color color;
+  final String description;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(20),
+    child: Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE5EBF0)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: color),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: AppTheme.navy,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: AppTheme.mutedBlue,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              status,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          const Icon(Icons.chevron_right_rounded, color: AppTheme.mutedBlue),
+        ],
+      ),
+    ),
+  );
 }

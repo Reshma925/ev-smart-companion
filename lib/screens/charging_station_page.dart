@@ -47,8 +47,10 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         }
         if (permission == LocationPermission.denied ||
             permission == LocationPermission.deniedForever) {
-          setState(() => locationStatus =
-              'Location permission denied. Tap the map to set your location.');
+          setState(() {
+            locationStatus =
+                'Location permission denied. Tap the map to set your location.';
+          });
           return;
         }
       }
@@ -81,10 +83,18 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     final list = all.where((s) {
       if (q.isNotEmpty &&
           !s.name.toLowerCase().contains(q) &&
-          !s.provider.toLowerCase().contains(q)) return false;
-      if (fastOnly && !s.isFast) return false;
-      if (availableOnly && !s.available) return false;
-      if (type != 'All' && s.type != type) return false;
+          !s.provider.toLowerCase().contains(q)) {
+        return false;
+      }
+      if (fastOnly && !s.isFast) {
+        return false;
+      }
+      if (availableOnly && !s.available) {
+        return false;
+      }
+      if (type != 'All' && s.type != type) {
+        return false;
+      }
       return true;
     }).toList();
     list.sort((a, b) => dist(a).compareTo(dist(b))); // nearest first

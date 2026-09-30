@@ -1,7 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/foundation.dart'
-  show debugPrint, debugPrintStack, kIsWeb;
+    show debugPrint, debugPrintStack, kIsWeb;
 
 class AuthService {
   static Future<void>? _googleInitialization;
@@ -88,6 +88,31 @@ class AuthService {
 
   Future<void> sendPasswordResetEmail(String email) {
     return _auth.sendPasswordResetEmail(email: email.trim());
+  }
+
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final user = _auth.currentUser;
+    final email = user?.email;
+    if (user == null || email == null || email.isEmpty) {
+      throw StateError('Sign in with an email and password to change it.');
+    }
+    if (!user.providerData.any(
+      (provider) => provider.providerId == 'password',
+    )) {
+      throw StateError(
+        'This account does not use an email password. Use password reset if the account supports it.',
+      );
+    }
+
+    final credential = EmailAuthProvider.credential(
+      email: email,
+      password: currentPassword,
+    );
+    await user.reauthenticateWithCredential(credential);
+    await user.updatePassword(newPassword);
   }
 
   String messageFor(Object error) {

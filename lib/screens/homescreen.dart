@@ -11,6 +11,7 @@ import '../widgets/weather_card.dart';
 import 'charging_station_page.dart';
 import 'login_page.dart';
 import 'maintenance.dart';
+import 'profile_page.dart';
 import 'trip_planner.dart';
 import 'vehicle_health_page.dart';
 
@@ -130,6 +131,15 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       MaterialPageRoute(builder: (_) => const ChargingStationPage()),
     );
+  }
+
+  Future<void> openProfile() async {
+    setState(() => navIndex = 3);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ProfilePage()),
+    );
+    if (mounted) setState(() => navIndex = 0);
   }
 
   @override
@@ -269,8 +279,12 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: navIndex,
         onTap: (index) {
-          setState(() => navIndex = index);
-          if (index == 1) openChargingMap();
+          if (index == 3) {
+            openProfile();
+          } else {
+            setState(() => navIndex = index);
+            if (index == 1) openChargingMap();
+          }
         },
         type: BottomNavigationBarType.fixed,
         backgroundColor: Colors.white,
