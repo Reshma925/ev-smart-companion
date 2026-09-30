@@ -6,6 +6,8 @@ import '../models/vehicle.dart';
 import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
 import '../services/vehicle_simulator.dart';
+import '../services/weather_service.dart';
+import '../widgets/weather_card.dart';
 import 'charging_station_page.dart';
 import 'login_page.dart';
 import 'maintenance.dart';
@@ -34,8 +36,9 @@ class _DashboardIdentity {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final authService = AuthService();
-  final firestoreService = FirestoreService();
+  final AuthService authService = AuthService();
+  final FirestoreService firestoreService = FirestoreService();
+  final WeatherService weatherService = WeatherService();
   late Future<_DashboardIdentity> dashboardIdentity;
   VehicleSimulator? simulator;
   int navIndex = 0;
@@ -50,6 +53,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     simulator?.stop();
+    weatherService.dispose();
     super.dispose();
   }
 
@@ -70,7 +74,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // Refresh identity from Firestore instead of treating the route argument as authoritative.
+    // Re-read authoritative identity from Firestore each time the dashboard opens.
     final vehicle = await firestoreService.getVehicleById(vehicleId);
     if (vehicle == null) {
       throw StateError(
@@ -94,9 +98,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String greeting() {
     final hour = DateTime.now().hour;
-    if (hour < 12) return 'Good Morning';
-    if (hour < 17) return 'Good Afternoon';
-    return 'Good Evening';
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    return 'Good evening';
   }
 
   Future<void> logout() async {
@@ -121,9 +125,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void openChargingMap() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ChargingStationPage()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF4F7FA),
       body: SafeArea(
         child: FutureBuilder<_DashboardIdentity>(
           future: dashboardIdentity,
@@ -132,25 +144,11 @@ class _HomeScreenState extends State<HomeScreen> {
               return const Center(child: CircularProgressIndicator());
             }
             if (identitySnapshot.hasError || !identitySnapshot.hasData) {
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(28),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        identitySnapshot.error?.toString() ??
-                            'Could not load your Firestore vehicle profile.',
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: retryLoadingIdentity,
-                        child: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                ),
+              return _LoadError(
+                message:
+                    identitySnapshot.error?.toString() ??
+                    'Could not load your Firestore vehicle profile.',
+                onRetry: retryLoadingIdentity,
               );
             }
 
@@ -159,206 +157,109 @@ class _HomeScreenState extends State<HomeScreen> {
               stream: identity.simulator.stream,
               builder: (context, telemetrySnapshot) {
                 if (telemetrySnapshot.hasError) {
-                  return Center(
-                    child: Text(
-                      'Could not load vehicle telemetry: ${telemetrySnapshot.error}',
-                    ),
+                  return _LoadError(
+                    message:
+                        'Could not load vehicle telemetry: ${telemetrySnapshot.error}',
+                    onRetry: retryLoadingIdentity,
                   );
                 }
                 if (!telemetrySnapshot.hasData) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                final data = telemetrySnapshot.data!;
-                return ListView(
-                  padding: const EdgeInsets.all(20),
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '${greeting()}, ${identity.name} · ${identity.vehicle.model}',
-                            style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.navy,
-                            ),
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    final wide = constraints.maxWidth >= 900;
+                    final data = telemetrySnapshot.data!;
+                    final contentWidth = wide ? 1160.0 : 760.0;
+                    final batterySection = _BatteryPanel(data: data);
+                    final weatherSection = WeatherCard(service: weatherService);
+                    final summary = _VehicleHealthSummary(data: data);
+                    final actions = _QuickActions(
+                      onCharging: openChargingMap,
+                      onTripPlanner: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => TripPlannerPage(
+                            battery: data.battery,
+                            range: data.range,
                           ),
                         ),
-                        PopupMenuButton<String>(
-                          enabled: !loggingOut,
-                          onSelected: (value) {
-                            if (value == 'logout') logout();
-                          },
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(
-                              value: 'logout',
-                              child: Text('Log out'),
-                            ),
-                          ],
-                          icon: loggingOut
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.more_vert),
+                      ),
+                      onHealth: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              VehicleHealthPage(vehicle: identity.vehicle),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${identity.vehicle.registrationNumber} · ${identity.vehicle.bluetoothDeviceName}',
-                      style: const TextStyle(color: AppTheme.mutedBlue),
-                    ),
-                    const SizedBox(height: 16),
-                    const Icon(
-                      Icons.electric_car,
-                      size: 110,
-                      color: AppTheme.blue,
-                    ),
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: infoCard(
-                            'Battery',
-                            '${data.battery.toStringAsFixed(0)}%',
-                            Icons.battery_std,
-                          ),
+                      ),
+                      onMaintenance: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              MaintenancePage(vehicle: identity.vehicle),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: infoCard(
-                            'Range',
-                            '${data.range.toStringAsFixed(0)} km',
-                            Icons.route,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    Center(
-                      child: SizedBox(
-                        width: 140,
-                        height: 140,
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            CircularProgressIndicator(
-                              value: data.healthScore / 100,
-                              strokeWidth: 12,
-                              color: AppTheme.blue,
-                              backgroundColor: Colors.grey.shade200,
-                            ),
-                            Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    '${data.healthScore}',
-                                    style: const TextStyle(
-                                      fontSize: 32,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppTheme.navy,
-                                    ),
+                      ),
+                    );
+
+                    return Center(
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: contentWidth),
+                        child: CustomScrollView(
+                          slivers: [
+                            SliverPadding(
+                              padding: EdgeInsets.fromLTRB(
+                                wide ? 32 : 20,
+                                16,
+                                wide ? 32 : 20,
+                                28,
+                              ),
+                              sliver: SliverList(
+                                delegate: SliverChildListDelegate([
+                                  _DashboardHeader(
+                                    greeting: greeting(),
+                                    name: identity.name,
+                                    loggingOut: loggingOut,
+                                    onLogout: logout,
                                   ),
-                                  const Text(
-                                    'Health Score',
-                                    style: TextStyle(color: AppTheme.mutedBlue),
+                                  const SizedBox(height: 22),
+                                  _VehicleHero(
+                                    vehicle: identity.vehicle,
+                                    data: data,
                                   ),
-                                ],
+                                  const SizedBox(height: 18),
+                                  if (wide)
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(child: batterySection),
+                                        const SizedBox(width: 16),
+                                        Expanded(child: weatherSection),
+                                      ],
+                                    )
+                                  else ...[
+                                    batterySection,
+                                    const SizedBox(height: 14),
+                                    weatherSection,
+                                  ],
+                                  const SizedBox(height: 16),
+                                  summary,
+                                  const SizedBox(height: 24),
+                                  _SectionHeading(
+                                    eyebrow: 'AT A GLANCE',
+                                    title: 'Your next move',
+                                  ),
+                                  const SizedBox(height: 12),
+                                  actions,
+                                ]),
                               ),
                             ),
                           ],
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: infoCard(
-                            'Battery Health',
-                            '${data.batteryHealth.toStringAsFixed(1)}%',
-                            Icons.favorite_outline,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: infoCard(
-                            'Charging',
-                            data.isCharging ? 'Charging' : 'Not charging',
-                            data.isCharging
-                                ? Icons.battery_charging_full
-                                : Icons.power_off,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-                    const Text(
-                      'Quick Actions',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.navy,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceAround,
-                      children: [
-                        actionButton(
-                          'Charging\nMap',
-                          Icons.ev_station,
-                          () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const ChargingStationPage(),
-                            ),
-                          ),
-                        ),
-                        actionButton(
-                          'Trip\nPlanner',
-                          Icons.map_outlined,
-                          () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => TripPlannerPage(
-                                battery: data.battery,
-                                range: data.range,
-                              ),
-                            ),
-                          ),
-                        ),
-                        actionButton(
-                          'Vehicle\nHealth',
-                          Icons.monitor_heart_outlined,
-                          () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  VehicleHealthPage(vehicle: identity.vehicle),
-                            ),
-                          ),
-                        ),
-                        actionButton(
-                          'Mainte-\nnance',
-                          Icons.build_outlined,
-                          () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  MaintenancePage(vehicle: identity.vehicle),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                    );
+                  },
                 );
               },
             );
@@ -367,73 +268,817 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: navIndex,
-        onTap: (index) => setState(() => navIndex = index),
+        onTap: (index) {
+          setState(() => navIndex = index);
+          if (index == 1) openChargingMap();
+        },
         type: BottomNavigationBarType.fixed,
+        backgroundColor: Colors.white,
         selectedItemColor: AppTheme.blue,
         unselectedItemColor: AppTheme.mutedBlue,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
           BottomNavigationBarItem(
-            icon: Icon(Icons.ev_station),
+            icon: Icon(Icons.grid_view_rounded),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.ev_station_rounded),
             label: 'Charging',
           ),
-          BottomNavigationBarItem(icon: Icon(Icons.school), label: 'Learn'),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.school_outlined),
+            label: 'Learn',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline_rounded),
+            label: 'Profile',
+          ),
         ],
       ),
     );
   }
+}
 
-  Widget infoCard(String label, String value, IconData icon) {
+class _DashboardHeader extends StatelessWidget {
+  const _DashboardHeader({
+    required this.greeting,
+    required this.name,
+    required this.loggingOut,
+    required this.onLogout,
+  });
+
+  final String greeting;
+  final String name;
+  final bool loggingOut;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Container(
+        width: 42,
+        height: 42,
+        decoration: BoxDecoration(
+          color: AppTheme.navy,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: const Icon(Icons.bolt_rounded, color: Color(0xFF71D6C0)),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'EV SMART COMPANION',
+              style: TextStyle(
+                color: AppTheme.mutedBlue,
+                fontSize: 9,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.25,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              '$greeting, ${name.split(' ').first}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppTheme.navy,
+                fontSize: 19,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+      PopupMenuButton<String>(
+        tooltip: 'Profile and account',
+        onSelected: (value) {
+          if (value == 'logout') onLogout();
+        },
+        itemBuilder: (context) => [
+          PopupMenuItem<String>(
+            value: 'account',
+            enabled: false,
+            child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          const PopupMenuDivider(),
+          PopupMenuItem<String>(
+            value: 'logout',
+            child: Row(
+              children: [
+                const Icon(Icons.logout_rounded, size: 18),
+                const SizedBox(width: 10),
+                Text(loggingOut ? 'Signing out…' : 'Log out'),
+              ],
+            ),
+          ),
+        ],
+        child: CircleAvatar(
+          radius: 21,
+          backgroundColor: Colors.white,
+          child: loggingOut
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.person_outline_rounded, color: AppTheme.navy),
+        ),
+      ),
+    ],
+  );
+}
+
+class _VehicleHero extends StatelessWidget {
+  const _VehicleHero({required this.vehicle, required this.data});
+
+  final Vehicle vehicle;
+  final VehicleData data;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    clipBehavior: Clip.antiAlias,
+    padding: const EdgeInsets.fromLTRB(22, 20, 22, 21),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(26),
+      gradient: const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF101F34), Color(0xFF183A51), Color(0xFF12665F)],
+      ),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x24101F34),
+          blurRadius: 22,
+          offset: Offset(0, 11),
+        ),
+      ],
+    ),
+    child: Stack(
+      children: [
+        Positioned(
+          right: -22,
+          top: -54,
+          child: Container(
+            width: 190,
+            height: 190,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.07),
+                width: 24,
+              ),
+            ),
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF4CD7A7).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.circle,
+                          size: 7,
+                          color: Color(0xFF55E0AF),
+                        ),
+                        const SizedBox(width: 7),
+                        Text(
+                          data.battery <= 20
+                              ? 'LOW BATTERY'
+                              : data.isCharging
+                              ? 'CHARGING'
+                              : 'VEHICLE LINKED',
+                          style: const TextStyle(
+                            color: Color(0xFFB3F2D9),
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    vehicle.model,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 25,
+                      height: 1.12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    vehicle.registrationNumber,
+                    style: const TextStyle(
+                      color: Color(0xFFBDD0DD),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1.1,
+                    ),
+                  ),
+                  if (vehicle.bluetoothDeviceName.isNotEmpty) ...[
+                    const SizedBox(height: 13),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.bluetooth_rounded,
+                          size: 16,
+                          color: Color(0xFF73D9D0),
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            vehicle.bluetoothDeviceName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFFD0E2E8),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        const Text(
+                          'Preview',
+                          style: TextStyle(
+                            color: Color(0xFFB5C4CC),
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(
+              Icons.electric_car_rounded,
+              size: 86,
+              color: Color(0xFF7BDCC8),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+class _BatteryPanel extends StatelessWidget {
+  const _BatteryPanel({required this.data});
+
+  final VehicleData data;
+
+  @override
+  Widget build(BuildContext context) {
+    final battery = (data.battery / 100).clamp(0.0, 1.0);
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(21),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFD9E0E8)),
+        borderRadius: BorderRadius.circular(23),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0C172A3B),
+            blurRadius: 18,
+            offset: Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: AppTheme.blue),
-          const SizedBox(height: 8),
-          Text(label, style: const TextStyle(color: AppTheme.mutedBlue)),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              color: AppTheme.navy,
+          const _SectionHeading(eyebrow: 'ENERGY', title: 'Driving range'),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              SizedBox(
+                width: 104,
+                height: 104,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    TweenAnimationBuilder<double>(
+                      tween: Tween<double>(begin: 0, end: battery),
+                      duration: const Duration(milliseconds: 700),
+                      curve: Curves.easeOutCubic,
+                      builder: (context, value, _) => SizedBox.expand(
+                        child: CircularProgressIndicator(
+                          value: value,
+                          strokeWidth: 9,
+                          strokeCap: StrokeCap.round,
+                          backgroundColor: const Color(0xFFE9EEF2),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            data.battery <= 20
+                                ? const Color(0xFFE7A647)
+                                : const Color(0xFF28A985),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${data.battery.round()}%',
+                          style: const TextStyle(
+                            color: AppTheme.navy,
+                            fontSize: 25,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const Text(
+                          'BATTERY',
+                          style: TextStyle(
+                            color: AppTheme.mutedBlue,
+                            fontSize: 8,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${data.range.round()}',
+                      style: const TextStyle(
+                        color: AppTheme.navy,
+                        fontSize: 39,
+                        height: 1,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'km estimated range',
+                      style: TextStyle(color: AppTheme.mutedBlue, fontSize: 12),
+                    ),
+                    const SizedBox(height: 14),
+                    _ChargeBadge(isCharging: data.isCharging),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 17),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: LinearProgressIndicator(
+              value: battery,
+              minHeight: 6,
+              backgroundColor: const Color(0xFFE9EEF2),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                data.battery <= 20
+                    ? const Color(0xFFE7A647)
+                    : const Color(0xFF28A985),
+              ),
             ),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget actionButton(String label, IconData icon, [VoidCallback? onTap]) {
-    return Column(
-      children: [
-        InkWell(
-          onTap: onTap ?? () {},
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            width: 60,
-            height: 60,
-            decoration: BoxDecoration(
-              color: const Color(0xFFE8F1FB),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Icon(icon, color: AppTheme.blue),
+class _ChargeBadge extends StatelessWidget {
+  const _ChargeBadge({required this.isCharging});
+
+  final bool isCharging;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isCharging
+        ? const Color(0xFF197B69)
+        : const Color(0xFF526477);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: isCharging ? const Color(0xFFE6F6EF) : const Color(0xFFF0F3F6),
+        borderRadius: BorderRadius.circular(30),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isCharging ? Icons.bolt_rounded : Icons.power_outlined,
+            size: 15,
+            color: color,
           ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 12, color: AppTheme.navy),
-        ),
-      ],
+          const SizedBox(width: 5),
+          Text(
+            isCharging ? 'Charging now' : 'Not charging',
+            style: TextStyle(
+              color: color,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
     );
   }
+}
+
+class _VehicleHealthSummary extends StatelessWidget {
+  const _VehicleHealthSummary({required this.data});
+
+  final VehicleData data;
+
+  @override
+  Widget build(BuildContext context) {
+    final scoreColor = data.healthScore >= 80
+        ? const Color(0xFF21896D)
+        : data.healthScore >= 60
+        ? const Color(0xFFD38A2F)
+        : const Color(0xFFC95454);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF5F0),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 470;
+          final content = [
+            Expanded(
+              flex: 2,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        CircularProgressIndicator(
+                          value: (data.healthScore / 100).clamp(0.0, 1.0),
+                          strokeWidth: 4,
+                          backgroundColor: Colors.white,
+                          valueColor: AlwaysStoppedAnimation<Color>(scoreColor),
+                        ),
+                        Text(
+                          '${data.healthScore}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            color: scoreColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Flexible(
+                    child: Text(
+                      'Vehicle health',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.navy,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _SummaryMetric(
+              label: 'BATTERY HEALTH',
+              value: '${data.batteryHealth.toStringAsFixed(1)}%',
+              icon: Icons.favorite_outline,
+            ),
+            _SummaryMetric(
+              label: 'STATUS',
+              value: data.isCharging ? 'Charging' : 'Ready',
+              icon: data.isCharging
+                  ? Icons.bolt_rounded
+                  : Icons.check_circle_outline,
+            ),
+          ];
+          if (compact) {
+            return Column(
+              children: [
+                Row(children: [content[0]]),
+                const Divider(height: 24),
+                Row(
+                  children: [content[1], const SizedBox(width: 12), content[2]],
+                ),
+              ],
+            );
+          }
+          return Row(
+            children: [
+              content[0],
+              const _SummaryDivider(),
+              content[1],
+              const _SummaryDivider(),
+              content[2],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _SummaryMetric extends StatelessWidget {
+  const _SummaryMetric({
+    required this.label,
+    required this.value,
+    required this.icon,
+  });
+
+  final String label;
+  final String value;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: Row(
+      children: [
+        Icon(icon, size: 18, color: const Color(0xFF318B72)),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppTheme.mutedBlue,
+                  fontSize: 8,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: .6,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppTheme.navy,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _SummaryDivider extends StatelessWidget {
+  const _SummaryDivider();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 1,
+    height: 32,
+    margin: const EdgeInsets.symmetric(horizontal: 14),
+    color: const Color(0xFFD1E5DC),
+  );
+}
+
+class _QuickActions extends StatelessWidget {
+  const _QuickActions({
+    required this.onCharging,
+    required this.onTripPlanner,
+    required this.onHealth,
+    required this.onMaintenance,
+  });
+
+  final VoidCallback onCharging;
+  final VoidCallback onTripPlanner;
+  final VoidCallback onHealth;
+  final VoidCallback onMaintenance;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final columns = constraints.maxWidth >= 900 ? 4 : 2;
+      final actions = [
+        _ActionItem(
+          'Charging map',
+          'Find nearby stations',
+          Icons.ev_station_rounded,
+          const Color(0xFFE4F3ED),
+          const Color(0xFF168266),
+          onCharging,
+        ),
+        _ActionItem(
+          'Trip planner',
+          'Plan your route',
+          Icons.alt_route_rounded,
+          const Color(0xFFE9EFFB),
+          const Color(0xFF416FC0),
+          onTripPlanner,
+        ),
+        _ActionItem(
+          'Vehicle health',
+          'Check diagnostics',
+          Icons.monitor_heart_outlined,
+          const Color(0xFFF2ECFB),
+          const Color(0xFF8055B5),
+          onHealth,
+        ),
+        _ActionItem(
+          'Maintenance',
+          'Service schedule',
+          Icons.build_circle_outlined,
+          const Color(0xFFFFF1E2),
+          const Color(0xFFCC8128),
+          onMaintenance,
+        ),
+      ];
+      final spacing = 10.0;
+      final width = (constraints.maxWidth - spacing * (columns - 1)) / columns;
+      return Wrap(
+        spacing: spacing,
+        runSpacing: spacing,
+        children: [
+          for (final action in actions)
+            SizedBox(
+              width: width,
+              child: _ActionTile(action: action),
+            ),
+        ],
+      );
+    },
+  );
+}
+
+class _ActionItem {
+  const _ActionItem(
+    this.title,
+    this.subtitle,
+    this.icon,
+    this.tint,
+    this.color,
+    this.onTap,
+  );
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color tint;
+  final Color color;
+  final VoidCallback onTap;
+}
+
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({required this.action});
+
+  final _ActionItem action;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(18),
+    child: InkWell(
+      onTap: action.onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Padding(
+        padding: const EdgeInsets.all(15),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: action.tint,
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Icon(action.icon, color: action.color, size: 21),
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    action.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppTheme.navy,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    action.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppTheme.mutedBlue,
+                      fontSize: 10,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 12,
+              color: AppTheme.mutedBlue,
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _SectionHeading extends StatelessWidget {
+  const _SectionHeading({required this.eyebrow, required this.title});
+
+  final String eyebrow;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        eyebrow,
+        style: const TextStyle(
+          color: AppTheme.mutedBlue,
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 1.2,
+        ),
+      ),
+      const SizedBox(height: 3),
+      Text(
+        title,
+        style: const TextStyle(
+          color: AppTheme.navy,
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    ],
+  );
+}
+
+class _LoadError extends StatelessWidget {
+  const _LoadError({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.cloud_off_outlined,
+            size: 36,
+            color: AppTheme.mutedBlue,
+          ),
+          const SizedBox(height: 12),
+          Text(message, textAlign: TextAlign.center),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Try again'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
