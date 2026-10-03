@@ -24,6 +24,7 @@ void main() {
         );
       }
       expect(request.url.host, 'router.project-osrm.org');
+      expect(request.url.path, '/route/v1/driving/80.27,13.08;80.1709,12.9941');
       return http.Response(
         jsonEncode({
           'code': 'Ok',

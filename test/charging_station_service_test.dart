@@ -58,6 +58,34 @@ void main() {
     );
 
     test(
+      'generates a stable identity when the source omits its element ID',
+      () {
+        final element = {
+          'type': 'node',
+          'lat': 13.0827,
+          'lon': 80.2707,
+          'tags': {
+            'amenity': 'charging_station',
+            'name': 'City charging point',
+            'operator': 'Local operator',
+          },
+        };
+
+        final first = ChargingStation.fromOverpassElement(
+          element,
+          origin: const LatLng(13, 80),
+        );
+        final second = ChargingStation.fromOverpassElement(
+          element,
+          origin: const LatLng(13, 80),
+        );
+
+        expect(first.id, isNotEmpty);
+        expect(second.id, first.id);
+      },
+    );
+
+    test(
       'fast-charge classification requires source power of at least 50 kW',
       () {
         ChargingStation stationWithPower(String power) => ChargingStation(
@@ -121,6 +149,97 @@ void main() {
       expect(query, contains('around:30000,13.0827,80.2707'));
       expect(stations.map((station) => station.operator), ['A', 'B']);
       expect(stations.first.distanceKm, lessThan(stations.last.distanceKm));
+    },
+  );
+
+  test(
+    'preserves distinct nearby stations while removing a co-located duplicate',
+    () async {
+      expect(
+        ChargingStation.distanceBetweenKm(
+          const LatLng(13.1, 80.27),
+          const LatLng(13.10018, 80.27),
+        ),
+        closeTo(0.02, 0.005),
+      );
+      final client = MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'elements': [
+              {
+                'type': 'node',
+                'id': 1,
+                'lat': 13.1,
+                'lon': 80.27,
+                'tags': {
+                  'amenity': 'charging_station',
+                  'name': 'Central Charging',
+                  'operator': 'Network A',
+                },
+              },
+              {
+                'type': 'way',
+                'id': 2,
+                'center': {'lat': 13.10002, 'lon': 80.27},
+                'tags': {
+                  'amenity': 'charging_station',
+                  'name': 'Central Charging',
+                  'operator': 'Network A',
+                },
+              },
+              {
+                'type': 'node',
+                'id': 3,
+                'lat': 13.10018,
+                'lon': 80.27,
+                'tags': {
+                  'amenity': 'charging_station',
+                  'name': 'Central Charging',
+                  'operator': 'Network A',
+                },
+              },
+              {
+                'type': 'node',
+                'id': 4,
+                'lat': 13.10036,
+                'lon': 80.27,
+                'tags': {
+                  'amenity': 'charging_station',
+                  'name': 'Central Charging',
+                  'operator': 'Network B',
+                },
+              },
+              {
+                'type': 'node',
+                'id': 5,
+                'lat': 13.10054,
+                'lon': 80.27,
+                'tags': {'amenity': 'charging_station'},
+              },
+            ],
+          }),
+          200,
+        );
+      });
+      final service = ChargingStationService(client: client);
+      addTearDown(service.close);
+
+      final stations = await service.findNearbyStations(
+        center: const LatLng(13.0827, 80.2707),
+        radiusKm: 10,
+      );
+
+      expect(stations.map((station) => station.id), [
+        'node/1',
+        'node/3',
+        'node/4',
+        'node/5',
+      ]);
+      expect(stations.map((station) => station.operator).toSet(), {
+        'Network A',
+        'Network B',
+        null,
+      });
     },
   );
 

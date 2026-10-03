@@ -47,11 +47,7 @@ out center tags;
       final refreshedDistances = cached
           .map(
             (station) => station.withDistanceFromOrigin(
-              const Distance().as(
-                LengthUnit.Kilometer,
-                center,
-                station.location,
-              ),
+              ChargingStation.distanceBetweenKm(center, station.location),
             ),
           )
           .where((station) => station.distanceKm <= radiusKm)
@@ -132,11 +128,7 @@ out center tags;
       return cached
           .map(
             (station) => station.withDistanceFromOrigin(
-              const Distance().as(
-                LengthUnit.Kilometer,
-                origin,
-                station.location,
-              ),
+              ChargingStation.distanceBetweenKm(origin, station.location),
             ),
           )
           .where((station) => station.distanceKm <= searchRadiusKm)
@@ -225,24 +217,31 @@ out center tags;
     final unique = <ChargingStation>[];
     for (final station in stations) {
       final duplicate = unique.any((existing) {
-        final sameName = station.name?.trim().toLowerCase() ==
-            existing.name?.trim().toLowerCase();
-        final sameOperator = station.operator?.trim().toLowerCase() ==
-            existing.operator?.trim().toLowerCase();
-        final distance = const Distance().as(
-              LengthUnit.Kilometer,
-              station.location,
-              existing.location,
-            );
-        if (station.name == null && existing.name == null) {
-          return sameOperator && distance <= 0.02;
+        final stationName = _normalizedIdentity(station.name);
+        final existingName = _normalizedIdentity(existing.name);
+        final stationOperator = _normalizedIdentity(station.operator);
+        final existingOperator = _normalizedIdentity(existing.operator);
+        if (stationName.isEmpty ||
+            existingName.isEmpty ||
+            stationOperator.isEmpty ||
+            existingOperator.isEmpty ||
+            stationName != existingName ||
+            stationOperator != existingOperator) {
+          return false;
         }
-        return sameName && sameOperator && distance <= 0.05;
+        final distance = ChargingStation.distanceBetweenKm(
+          station.location,
+          existing.location,
+        );
+        return distance <= 0.01;
       });
       if (!duplicate) unique.add(station);
     }
     return List.unmodifiable(unique);
   }
+
+  static String _normalizedIdentity(Object? value) =>
+      value?.toString().trim().toLowerCase() ?? '';
 
   List<ChargingStation>? _cached(String key) {
     final value = _cache[key];
@@ -256,7 +255,7 @@ out center tags;
 
   static double _distanceToRouteKm(LatLng point, List<LatLng> route) {
     if (route.length == 1) {
-      return const Distance().as(LengthUnit.Kilometer, point, route.single);
+      return ChargingStation.distanceBetweenKm(point, route.single);
     }
     var minimum = double.infinity;
     for (var i = 0; i < route.length - 1; i++) {

@@ -88,13 +88,6 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     );
   }
 
-  double? get _usableRangeKm {
-    final range = _estimatedRangeKm;
-    return range == null
-        ? null
-        : EvRangeService.calculateUsableRange(estimatedRangeKm: range);
-  }
-
   double? get _searchRadiusKm => _estimatedRangeKm;
 
   bool get _canSearch => !_loadingStations && !_loadingRoute;
@@ -657,8 +650,8 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       return;
     }
     if (!mounted) return;
-    final usableRangeKm = _usableRangeKm;
-    if (usableRangeKm == null || usableRangeKm <= 0) {
+    final searchRadiusKm = _searchRadiusKm;
+    if (searchRadiusKm == null || searchRadiusKm <= 0) {
       setState(() {
         _loadingRoute = false;
         _destinationMessage =
@@ -687,19 +680,19 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         _activeRoute = route;
         _routeSearchMode = true;
         _loadingRoute = false;
-        _destinationMessage = route.distanceKm > usableRangeKm
+        _destinationMessage = route.distanceKm > searchRadiusKm
             ? 'The destination is beyond the current usable range. Plan charging stops before relying on this route.'
             : null;
       });
       final stations = await _chargingService.findAlongRoute(
         origin: origin,
         routePoints: route.points,
-        searchRadiusKm: usableRangeKm,
+        searchRadiusKm: searchRadiusKm,
       );
       if (!mounted || generation != _searchGeneration) return;
       final inRangeStations =
           stations
-              .where((station) => station.distanceKm <= usableRangeKm)
+              .where((station) => station.distanceKm <= searchRadiusKm)
               .toList()
             ..sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
       setState(() {
@@ -736,8 +729,20 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   }
 
   Future<RoadRoute?> _showRouteToStation(ChargingStation station) async {
+    if (mounted) {
+      setState(() {
+        _selectedStationId = station.id;
+        _activeRoute = null;
+        _routeSearchMode = false;
+        _loadingRoute = true;
+        _destinationMessage = null;
+      });
+    }
+    await _locateUser();
+    if (!mounted) return null;
     final origin = _userLocation;
-    if (origin == null) {
+    if (origin == null || _locationMessage != null) {
+      setState(() => _loadingRoute = false);
       _showMessage(
         'Your current location is unavailable. Retry location access.',
       );
@@ -748,10 +753,6 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       address: station.address ?? station.name ?? 'Charging station',
       location: station.location,
     );
-    setState(() {
-      _loadingRoute = true;
-      _destinationMessage = null;
-    });
     try {
       final route = await _directionsService.route(
         origin: origin,
@@ -780,11 +781,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       );
       if (!mounted) return null;
       setState(() => _loadingRoute = false);
-      _showMessage(
-        error is RoadDirectionsException
-            ? error.message
-            : 'Could not calculate directions. Please try again.',
-      );
+      _showMessage('Directions are currently unavailable.');
       return null;
     }
   }
@@ -799,7 +796,12 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   }
 
   void _selectStation(ChargingStation station) {
-    setState(() => _selectedStationId = station.id);
+    setState(() {
+      _selectedStationId = station.id;
+      if (_activeRoute?.destination.location != station.location) {
+        _activeRoute = null;
+      }
+    });
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1031,7 +1033,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
               child: Column(
                 children: [
                   Expanded(
-                    flex: 6,
+                    flex: 4,
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                       child: ClipRRect(
@@ -1041,13 +1043,15 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
                     ),
                   ),
                   Expanded(
-                    flex: 4,
+                    flex: 6,
                     child: _StationList(
                       stations: _visibleStations,
                       totalStationCount: _inRangeStations.length,
+                      selectedStationId: _selectedStationId,
                       searchController: _stationSearchController,
                       distanceUnit: _distanceUnit,
                       loading: _loadingStations,
+                      loadingRoute: _loadingRoute,
                       hasSearched: _hasSearched,
                       fastChargingOnly: _fastChargingOnly,
                       message: _stationMessage,
@@ -1059,6 +1063,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
                         _stationSearchController.clear();
                         setState(() => _fastChargingOnly = false);
                       },
+                      onDirections: _showRouteToStation,
                       onSelect: _selectStation,
                     ),
                   ),
@@ -1324,16 +1329,6 @@ class _RangeSummary extends StatelessWidget {
               ),
             ],
           ),
-          if (searchRadiusKm != null) ...[
-            const SizedBox(height: 7),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Search radius uses 80% of estimated range as a safety reserve.',
-                style: TextStyle(color: AppTheme.mutedBlue, fontSize: 11),
-              ),
-            ),
-          ],
           if (message != null) ...[
             const SizedBox(height: 8),
             Align(
@@ -1415,9 +1410,11 @@ class _StationList extends StatelessWidget {
   const _StationList({
     required this.stations,
     required this.totalStationCount,
+    required this.selectedStationId,
     required this.searchController,
     required this.distanceUnit,
     required this.loading,
+    required this.loadingRoute,
     required this.hasSearched,
     required this.fastChargingOnly,
     required this.message,
@@ -1425,14 +1422,17 @@ class _StationList extends StatelessWidget {
     required this.onSearchChanged,
     required this.onFastChargingChanged,
     required this.onClearFilters,
+    required this.onDirections,
     required this.onSelect,
   });
 
   final List<ChargingStation> stations;
   final int totalStationCount;
+  final String? selectedStationId;
   final TextEditingController searchController;
   final String distanceUnit;
   final bool loading;
+  final bool loadingRoute;
   final bool hasSearched;
   final bool fastChargingOnly;
   final String? message;
@@ -1440,6 +1440,7 @@ class _StationList extends StatelessWidget {
   final ValueChanged<String> onSearchChanged;
   final ValueChanged<bool> onFastChargingChanged;
   final VoidCallback onClearFilters;
+  final ValueChanged<ChargingStation> onDirections;
   final ValueChanged<ChargingStation> onSelect;
 
   @override
@@ -1548,6 +1549,9 @@ class _StationList extends StatelessWidget {
                   itemBuilder: (context, index) => _StationCard(
                     station: stations[index],
                     distanceUnit: distanceUnit,
+                    selected: stations[index].id == selectedStationId,
+                    loadingRoute: loadingRoute,
+                    onDirections: () => onDirections(stations[index]),
                     onTap: () => onSelect(stations[index]),
                   ),
                 )
@@ -1578,78 +1582,143 @@ class _StationCard extends StatelessWidget {
   const _StationCard({
     required this.station,
     required this.distanceUnit,
+    required this.selected,
+    required this.loadingRoute,
+    required this.onDirections,
     required this.onTap,
   });
 
   final ChargingStation station;
   final String distanceUnit;
+  final bool selected;
+  final bool loadingRoute;
+  final VoidCallback onDirections;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final info = <String>[
-      if (station.operator != null) station.operator!,
-      DistanceUnitService.format(station.distanceKm, distanceUnit),
-      if (station.connectors.isNotEmpty) station.connectors.join(', '),
-      if (station.power != null) station.power!,
-      if (station.distanceFromRouteKm != null)
-        '${DistanceUnitService.format(station.distanceFromRouteKm!, distanceUnit)} from route',
-      if (station.address != null) station.address!,
-    ];
+    String available(String? value) =>
+        value == null || value.trim().isEmpty ? 'Not available' : value;
+
     return Material(
-      color: Colors.white,
+      color: selected ? const Color(0xFFEAF4FC) : Colors.white,
       borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.all(13),
-          child: Row(
-            children: [
-              Container(
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEAF4FC),
-                  borderRadius: BorderRadius.circular(13),
-                ),
-                child: const Icon(
-                  Icons.ev_station_rounded,
-                  color: AppTheme.blue,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: selected ? AppTheme.blue : const Color(0xFFE7EDF3),
+          ),
+        ),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Padding(
+            padding: const EdgeInsets.all(13),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    Text(
-                      station.name ?? 'Not available',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppTheme.navy,
-                        fontWeight: FontWeight.w700,
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEAF4FC),
+                        borderRadius: BorderRadius.circular(13),
+                      ),
+                      child: const Icon(
+                        Icons.ev_station_rounded,
+                        color: AppTheme.blue,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      info.join(' • '),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: AppTheme.mutedBlue,
-                        fontSize: 12,
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            station.name ?? 'Not available',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppTheme.navy,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${available(station.operator)} · '
+                            '${DistanceUnitService.format(station.distanceKm, distanceUnit)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppTheme.mutedBlue,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-              ),
-              const Icon(
-                Icons.chevron_right_rounded,
-                color: AppTheme.mutedBlue,
-              ),
-            ],
+                const SizedBox(height: 8),
+                Text(
+                  'Address: ${available(station.address)}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.mutedBlue,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Connectors: ${station.connectors.isEmpty ? 'Not available' : station.connectors.join(', ')}'
+                  ' · Power: ${available(station.power)}'
+                  ' · Points: ${station.chargingPoints?.toString() ?? 'Not available'}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.mutedBlue,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Availability: ${available(station.availability)}'
+                  ' · Hours: ${available(station.openingHours)}'
+                  ' · Fee: ${available(station.fee)}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.mutedBlue,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Row(
+                  children: [
+                    TextButton.icon(
+                      onPressed: onTap,
+                      icon: const Icon(Icons.info_outline_rounded, size: 18),
+                      label: const Text('View details'),
+                    ),
+                    const Spacer(),
+                    FilledButton.tonalIcon(
+                      onPressed: loadingRoute ? null : onDirections,
+                      icon: loadingRoute
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.directions_rounded, size: 18),
+                      label: const Text('Directions'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:latlong2/latlong.dart';
 
 class ChargingStation {
@@ -107,11 +109,7 @@ class ChargingStation {
     }
 
     final location = LatLng(latitude, longitude);
-    final distanceKm = const Distance().as(
-      LengthUnit.Kilometer,
-      origin,
-      location,
-    );
+    final distanceKm = distanceBetweenKm(origin, location);
     final connectors = <String>{};
     for (final key in tags.keys) {
       if (!key.startsWith('socket:') ||
@@ -150,9 +148,16 @@ class ChargingStation {
         .map((entry) => entry.value.toString().trim())
         .toSet();
     final address = _address(tags);
+    final elementId = element['id']?.toString();
+    final stationId = elementId == null || elementId.isEmpty
+        ? 'local/${location.latitude.toStringAsFixed(6)},'
+              '${location.longitude.toStringAsFixed(6)}/'
+              '${_normalizedIdentity(tags['operator'])}/'
+              '${_normalizedIdentity(tags['name'] ?? tags['name:en'])}'
+        : '${element['type'] ?? 'element'}/$elementId';
 
     return ChargingStation(
-      id: '${element['type'] ?? 'element'}/${element['id'] ?? ''}',
+      id: stationId,
       location: location,
       distanceKm: distanceKm,
       name: _firstTag(tags, const ['name', 'name:en']),
@@ -194,6 +199,26 @@ class ChargingStation {
       if (value != null && value.isNotEmpty) return value;
     }
     return null;
+  }
+
+  static String _normalizedIdentity(Object? value) =>
+      value?.toString().trim().toLowerCase() ?? '';
+
+  static double distanceBetweenKm(LatLng first, LatLng second) {
+    const earthRadiusKm = 6371.0088;
+    final firstLatitude = first.latitude * math.pi / 180;
+    final secondLatitude = second.latitude * math.pi / 180;
+    final latitudeDelta = (second.latitude - first.latitude) * math.pi / 180;
+    final longitudeDelta = (second.longitude - first.longitude) * math.pi / 180;
+    final haversine = math
+        .pow(math.sin(latitudeDelta / 2), 2)
+        .toDouble() +
+        math.cos(firstLatitude) *
+            math.cos(secondLatitude) *
+            math.pow(math.sin(longitudeDelta / 2), 2).toDouble();
+    final centralAngle =
+        2 * math.asin(math.sqrt(haversine.clamp(0.0, 1.0)));
+    return earthRadiusKm * centralAngle;
   }
 
   static double? _number(Object? value) {
