@@ -9,9 +9,10 @@ import 'package:image_picker/image_picker.dart';
 import '../app_theme.dart';
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
+import '../models/vehicle_telemetry.dart';
 import '../services/auth_service.dart';
+import '../services/distance_unit_service.dart';
 import '../services/firestore_service.dart';
-import '../services/vehicle_simulator.dart';
 import 'edit_profile_page.dart';
 import 'login_page.dart';
 import 'vehicle_details_page.dart';
@@ -147,18 +148,36 @@ class _ProfileDetails extends StatefulWidget {
   State<_ProfileDetails> createState() => _ProfileDetailsState();
 }
 
-class _ProfileDetailsState extends State<_ProfileDetails> {
+class _ProfileDetailsState extends State<_ProfileDetails>
+    with WidgetsBindingObserver {
   final _firestore = FirestoreService();
   final _storage = FirebaseStorage.instance;
   final _picker = ImagePicker();
   late Stream<UserModel?> _profileStream;
   late Future<UserModel?> _initialProfile;
   bool _uploadingPhoto = false;
+  bool _locationEnabled = false;
+  bool _checkingLocation = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _subscribeToProfile();
+    _refreshLocationPermission();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshLocationPermission();
+    }
   }
 
   void _subscribeToProfile() {
@@ -181,26 +200,37 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
     }
   }
 
-  Future<void> _uploadProfilePhoto(UserModel profile) async {
+  Future<void> _uploadProfilePhoto() async {
     if (_uploadingPhoto) return;
-    final picked = await _picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 85,
-      maxWidth: 1600,
-    );
+    XFile? picked;
+    try {
+      picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+        maxWidth: 1600,
+      );
+    } catch (_) {
+      if (mounted) {
+        widget.onMessage('Could not open your photos. Please try again.');
+      }
+      return;
+    }
     if (picked == null || !mounted) return;
 
     setState(() => _uploadingPhoto = true);
     try {
       final fileBytes = await picked.readAsBytes();
       final extension = picked.name.split('.').last.toLowerCase();
-      final fileExt = extension.isNotEmpty ? extension : 'jpg';
-      final ref = _storage
-          .ref()
-          .child('users/${widget.user.uid}/profile_photo.$fileExt');
+      final fileExt = const {'jpg', 'jpeg', 'png', 'webp'}.contains(extension)
+          ? extension
+          : 'jpg';
+      final contentType = fileExt == 'jpg' ? 'image/jpeg' : 'image/$fileExt';
+      final ref = _storage.ref().child(
+        'users/${widget.user.uid}/profile_photo.$fileExt',
+      );
       final uploadTask = ref.putData(
         fileBytes,
-        SettableMetadata(contentType: 'image/$fileExt'),
+        SettableMetadata(contentType: contentType),
       );
       final snapshot = await uploadTask;
       final url = await snapshot.ref.getDownloadURL();
@@ -214,58 +244,91 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
       }
     } catch (error) {
       if (mounted) {
-        widget.onMessage('Could not update your profile photo. Please try again.');
+        widget.onMessage(
+          'Could not update your profile photo. Please try again.',
+        );
       }
     } finally {
       if (mounted) setState(() => _uploadingPhoto = false);
     }
   }
 
-  Future<void> _locationPermission() async {
-    String message;
+  Future<void> _refreshLocationPermission() async {
     try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final permission = await Geolocator.checkPermission();
+      if (!mounted) return;
+      setState(() {
+        _locationEnabled =
+            serviceEnabled &&
+            (permission == LocationPermission.always ||
+                permission == LocationPermission.whileInUse);
+        _checkingLocation = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _locationEnabled = false;
+        _checkingLocation = false;
+      });
+    }
+  }
+
+  Future<void> _locationPermission() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        await Geolocator.openLocationSettings();
+        await _refreshLocationPermission();
+        return;
+      }
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.unableToDetermine) {
         permission = await Geolocator.requestPermission();
       }
-      message = switch (permission) {
-        LocationPermission.always || LocationPermission.whileInUse =>
-          'Location access is enabled for local driving conditions and weather updates.',
-        LocationPermission.deniedForever =>
-          'Location permission is blocked. Enable it in your device settings to use local EV conditions.',
-        _ =>
-          'Location permission is disabled. Enable it to get local driving conditions.',
-      };
+      if (permission == LocationPermission.deniedForever) {
+        await Geolocator.openAppSettings();
+      }
+      await _refreshLocationPermission();
     } catch (error) {
-      message = 'Could not check location permission. Please try again.';
+      if (mounted) {
+        widget.onMessage('Could not update location access. Please try again.');
+      }
     }
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Location services'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-    );
   }
 
-  int _profileCompletion(UserModel profile) {
-    final checks = <bool>[
-      profile.name.trim().isNotEmpty,
-      profile.phone.trim().isNotEmpty,
-      profile.city.trim().isNotEmpty,
-      profile.profileImageUrl.trim().isNotEmpty,
-      profile.vehicleId != null && profile.vehicleId!.trim().isNotEmpty,
-    ];
-    final complete = checks.where((element) => element).length;
-    return ((complete / checks.length) * 100).round();
+  Future<void> _verifyEmail() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      widget.onMessage('No authenticated user is available.');
+      return;
+    }
+
+    try {
+      await currentUser.sendEmailVerification();
+      await currentUser.reload();
+      if (mounted) {
+        widget.onMessage(
+          'Verification email sent. Please check your inbox and refresh your status.',
+        );
+        setState(() {});
+      }
+    } catch (error) {
+      if (mounted) {
+        widget.onMessage(widget.authService.messageFor(error));
+      }
+    }
+  }
+
+  Future<void> _refreshEmailStatus() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+    try {
+      await currentUser.reload();
+      if (mounted) setState(() {});
+    } catch (_) {
+      // The existing auth state is still valid if the refresh fails.
+    }
   }
 
   Future<void> _showPreferenceDialog({
@@ -296,7 +359,11 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
                     .map(
                       (option) => RadioListTile<String>(
                         value: option,
-                        title: Text(option),
+                        title: Text(switch (option) {
+                          'km' => 'Kilometres (km)',
+                          'mi' => 'Miles (mi)',
+                          _ => option,
+                        }),
                         contentPadding: EdgeInsets.zero,
                         dense: true,
                       ),
@@ -309,7 +376,13 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
       ),
     );
     if (selected != null && selected != currentValue) {
-      await onSelected(selected);
+      try {
+        await onSelected(selected);
+      } catch (error) {
+        if (mounted) {
+          widget.onMessage(widget.authService.messageFor(error));
+        }
+      }
     }
   }
 
@@ -359,13 +432,6 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
           }
 
           final profile = liveSnapshot.data ?? initialProfile;
-          final completion = _profileCompletion(profile);
-          final vehicleName = profile.vehicleId == null || profile.vehicleId!.trim().isEmpty
-              ? 'No vehicle connected'
-              : 'View vehicle';
-          final vehicleSubtitle = profile.vehicleId == null || profile.vehicleId!.trim().isEmpty
-              ? 'Add a vehicle to your Firestore profile'
-              : 'Open the linked EV details';
 
           return RefreshIndicator(
             onRefresh: () async {
@@ -378,65 +444,58 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
                   padding: const EdgeInsets.fromLTRB(18, 12, 18, 36),
                   children: [
                     _ProfileHeader(
-                      user: widget.user,
+                      user: FirebaseAuth.instance.currentUser ?? widget.user,
                       profile: profile,
                       uploading: _uploadingPhoto,
                       onEditProfile: () => _editProfile(profile),
-                      onEditPhoto: () => _uploadProfilePhoto(profile),
-                    ),
-                    const SizedBox(height: 18),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0xFFE5EBF0)),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            completion >= 80 ? Icons.verified_rounded : Icons.info_outline_rounded,
-                            color: completion >= 80 ? const Color(0xFF1EA76A) : const Color(0xFFB77A00),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              completion >= 80 ? 'Profile complete' : 'Profile $completion% complete',
-                              style: const TextStyle(
-                                color: AppTheme.navy,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                      onEditPhoto: _uploadProfilePhoto,
                     ),
                     const SizedBox(height: 24),
                     _SectionHeader(title: 'Personal information'),
                     const SizedBox(height: 12),
                     _PersonalInfoCard(
                       profile: profile,
-                      email: widget.user.email ?? profile.email,
-                      createdAt: widget.user.metadata.creationTime ?? profile.createdAt,
-                      onEdit: () => _editProfile(profile),
+                      createdAt:
+                          widget.user.metadata.creationTime ??
+                          profile.createdAt,
                     ),
                     const SizedBox(height: 24),
                     _SectionHeader(title: 'My vehicle'),
                     const SizedBox(height: 12),
                     _VehicleShortcutCard(
-                      title: vehicleName,
-                      subtitle: vehicleSubtitle,
-                      onTap: () {
-                        if (profile.vehicleId == null || profile.vehicleId!.trim().isEmpty) {
+                      firestore: _firestore,
+                      vehicleId: profile.vehicleId,
+                      onTap: () async {
+                        if (profile.vehicleId == null ||
+                            profile.vehicleId!.trim().isEmpty) {
+                          final navContext = context;
+                          if (!mounted) return;
+                          if (!navContext.mounted) return;
                           Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (_) => const VehicleDetailsPage()),
+                            navContext,
+                            MaterialPageRoute(
+                              builder: (_) => const VehicleDetailsPage(),
+                            ),
                           );
                           return;
                         }
+                        final navContext = context;
+                        final linkedVehicle = await _firestore
+                            .getVehicleRecordById(profile.vehicleId!);
+                        if (!mounted) return;
+                        if (linkedVehicle == null) {
+                          widget.onMessage(
+                            'The linked vehicle is unavailable in Firestore.',
+                          );
+                          return;
+                        }
+                        if (!navContext.mounted) return;
                         Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const VehicleDetailsPage()),
+                          navContext,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                VehicleDetailsPage(vehicle: linkedVehicle),
+                          ),
                         );
                       },
                     ),
@@ -446,6 +505,8 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
                     _PreferencesCard(
                       profile: profile,
                       onLocation: _locationPermission,
+                      locationEnabled: _locationEnabled,
+                      checkingLocation: _checkingLocation,
                       onNotifications: () => _showPreferenceDialog(
                         title: 'Notifications',
                         options: const ['All alerts', 'Vehicle only', 'Off'],
@@ -462,43 +523,27 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
                       ),
                       onUnits: () => _showPreferenceDialog(
                         title: 'Distance unit',
-                        options: const ['Kilometres', 'Miles'],
-                        currentValue: profile.unitSystem.isEmpty
-                            ? 'Kilometres'
-                            : profile.unitSystem,
+                        options: const ['km', 'mi'],
+                        currentValue: DistanceUnitService.normalize(
+                          profile.distanceUnit,
+                        ),
                         onSelected: (value) async {
                           await _firestore.updateUserProfile(
                             uid: widget.user.uid,
-                            unitSystem: value,
+                            distanceUnit: value,
                           );
                           widget.onMessage('Distance unit updated.');
-                        },
-                      ),
-                      onTemperature: () => _showPreferenceDialog(
-                        title: 'Temperature unit',
-                        options: const ['Celsius', 'Fahrenheit'],
-                        currentValue: 'Celsius',
-                        onSelected: (value) async {
-                          widget.onMessage('Temperature unit set to $value for this device session.');
-                        },
-                      ),
-                      onAppearance: () => _showPreferenceDialog(
-                        title: 'Appearance',
-                        options: const ['System', 'Light', 'Dark'],
-                        currentValue: 'System',
-                        onSelected: (value) async {
-                          widget.onMessage('Appearance set to $value for this device session.');
                         },
                       ),
                     ),
                     const SizedBox(height: 24),
                     _SectionHeader(title: 'Account'),
                     const SizedBox(height: 12),
-                    _AccountActionCard(
-                      icon: Icons.logout_rounded,
-                      title: 'Sign out',
-                      subtitle: 'End the current authenticated session',
-                      destructive: true,
+                    _AccountCard(
+                      user: FirebaseAuth.instance.currentUser ?? widget.user,
+                      signingOut: widget.signingOut,
+                      onVerifyEmail: _verifyEmail,
+                      onRefreshStatus: _refreshEmailStatus,
                       onTap: widget.onSignOut,
                     ),
                   ],
@@ -514,17 +559,52 @@ class _ProfileDetailsState extends State<_ProfileDetails> {
 
 class _VehicleShortcutCard extends StatelessWidget {
   const _VehicleShortcutCard({
-    required this.title,
-    required this.subtitle,
+    required this.firestore,
+    required this.vehicleId,
     required this.onTap,
   });
 
-  final String title;
-  final String subtitle;
+  final FirestoreService firestore;
+  final String? vehicleId;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => InkWell(
+  Widget build(BuildContext context) {
+    final id = vehicleId?.trim() ?? '';
+    if (id.isEmpty) {
+      return _card(
+        context,
+        title: 'No vehicle linked',
+        subtitle: 'Link your registered EV to your account',
+      );
+    }
+
+    return StreamBuilder<Vehicle?>(
+      stream: firestore.watchVehicleById(id),
+      builder: (context, snapshot) {
+        final vehicle = snapshot.data;
+        return _card(
+          context,
+          title: snapshot.hasError
+              ? 'Vehicle details unavailable'
+              : vehicle?.model.isNotEmpty == true
+              ? vehicle!.model
+              : snapshot.connectionState == ConnectionState.waiting
+              ? 'Loading linked vehicle…'
+              : 'Vehicle details unavailable',
+          subtitle: vehicle?.registrationNumber.isNotEmpty == true
+              ? vehicle!.registrationNumber
+              : 'Open linked EV details',
+        );
+      },
+    );
+  }
+
+  Widget _card(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+  }) => InkWell(
     borderRadius: BorderRadius.circular(20),
     onTap: onTap,
     child: Container(
@@ -580,18 +660,18 @@ class _PreferencesCard extends StatelessWidget {
   const _PreferencesCard({
     required this.profile,
     required this.onLocation,
+    required this.locationEnabled,
+    required this.checkingLocation,
     required this.onNotifications,
     required this.onUnits,
-    required this.onTemperature,
-    required this.onAppearance,
   });
 
   final UserModel profile;
   final VoidCallback onLocation;
+  final bool locationEnabled;
+  final bool checkingLocation;
   final VoidCallback onNotifications;
   final VoidCallback onUnits;
-  final VoidCallback onTemperature;
-  final VoidCallback onAppearance;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -612,27 +692,23 @@ class _PreferencesCard extends StatelessWidget {
         ),
         _PreferenceRow(
           icon: Icons.location_on_outlined,
-          title: 'Location',
-          value: 'Weather & driving conditions',
+          title: 'Location Services',
+          value: checkingLocation
+              ? 'Checking permission…'
+              : locationEnabled
+              ? 'Enabled · Local weather and driving conditions'
+              : 'Enable Location · Used for local weather and driving conditions',
           onTap: onLocation,
         ),
         _PreferenceRow(
           icon: Icons.straighten_rounded,
-          title: 'Distance',
-          value: profile.unitSystem.isEmpty ? 'Kilometres' : profile.unitSystem,
+          title: 'Distance Unit',
+          value:
+              DistanceUnitService.normalize(profile.distanceUnit) ==
+                  DistanceUnitService.mi
+              ? 'Miles (mi)'
+              : 'Kilometres (km)',
           onTap: onUnits,
-        ),
-        _PreferenceRow(
-          icon: Icons.thermostat_rounded,
-          title: 'Temperature',
-          value: 'Celsius',
-          onTap: onTemperature,
-        ),
-        _PreferenceRow(
-          icon: Icons.dark_mode_rounded,
-          title: 'Appearance',
-          value: 'System',
-          onTap: onAppearance,
         ),
       ],
     ),
@@ -690,65 +766,94 @@ class _PreferenceRow extends StatelessWidget {
   );
 }
 
-class _AccountActionCard extends StatelessWidget {
-  const _AccountActionCard({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
+class _AccountCard extends StatelessWidget {
+  const _AccountCard({
+    required this.user,
+    required this.signingOut,
+    required this.onVerifyEmail,
+    required this.onRefreshStatus,
     required this.onTap,
-    this.destructive = false,
   });
 
-  final IconData icon;
-  final String title;
-  final String subtitle;
+  final User user;
+  final bool signingOut;
+  final VoidCallback onVerifyEmail;
+  final VoidCallback onRefreshStatus;
   final VoidCallback onTap;
-  final bool destructive;
 
   @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    borderRadius: BorderRadius.circular(20),
-    child: Container(
-      padding: const EdgeInsets.all(18),
+  Widget build(BuildContext context) {
+    final verified = user.emailVerified;
+    final statusColor = verified
+        ? const Color(0xFF16875A)
+        : const Color(0xFFB87B00);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: destructive ? const Color(0xFFEAD1D4) : const Color(0xFFE5EBF0),
-        ),
+        border: Border.all(color: const Color(0xFFE5EBF0)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: destructive ? const Color(0xFFD93C4E) : AppTheme.blue),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
+          Row(
+            children: [
+              Icon(
+                verified
+                    ? Icons.verified_rounded
+                    : Icons.mark_email_unread_outlined,
+                color: statusColor,
+                size: 21,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  verified ? 'Email verified' : 'Email not verified',
                   style: TextStyle(
-                    color: destructive ? const Color(0xFFD93C4E) : AppTheme.navy,
+                    color: statusColor,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    color: AppTheme.mutedBlue,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+              ),
+              TextButton(
+                onPressed: onRefreshStatus,
+                child: const Text('Refresh'),
+              ),
+            ],
+          ),
+          if (!verified)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onVerifyEmail,
+                icon: const Icon(Icons.send_outlined, size: 18),
+                label: const Text('Send verification email'),
+              ),
+            ),
+          const Divider(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: TextButton.icon(
+              onPressed: signingOut ? null : onTap,
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFFD93C4E),
+                alignment: Alignment.centerLeft,
+              ),
+              icon: signingOut
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.logout_rounded),
+              label: Text(signingOut ? 'Signing out…' : 'Sign out'),
             ),
           ),
-          const Icon(Icons.chevron_right_rounded, color: AppTheme.mutedBlue),
         ],
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _ProfileHeader extends StatelessWidget {
@@ -766,150 +871,120 @@ class _ProfileHeader extends StatelessWidget {
   final VoidCallback onEditProfile;
   final VoidCallback onEditPhoto;
 
-  String get _initials {
-    final parts = profile.name.trim().split(RegExp(r'\s+'))
-      ..removeWhere((part) => part.isEmpty);
-    if (parts.isEmpty) return 'EV';
-    return parts.take(2).map((part) => part[0].toUpperCase()).join();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final imageUrl = (profile.profileImageUrl.isNotEmpty
-            ? profile.profileImageUrl
-            : (user.photoURL ?? ''))
-        .trim();
-    final displayName = profile.name.trim().isEmpty ? 'Your name' : profile.name;
-    final displayEmail = user.email?.trim().isNotEmpty == true
-        ? user.email!
-        : 'Email not available';
+    final imageUrl = profile.profileImageUrl.trim();
+    final displayName = profile.name.trim().isEmpty
+        ? 'Not provided'
+        : profile.name.trim();
+    final authEmail = user.email?.trim() ?? '';
+    final displayEmail = authEmail.isNotEmpty
+        ? authEmail
+        : profile.email.trim().isNotEmpty
+        ? profile.email.trim()
+        : 'Not provided';
 
     return Container(
-      padding: const EdgeInsets.all(22),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(24),
         border: Border.all(color: const Color(0xFFE5EBF0)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x0A11263E),
-            blurRadius: 18,
-            offset: Offset(0, 8),
+            blurRadius: 16,
+            offset: Offset(0, 6),
           ),
         ],
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
+      child: Column(
         children: [
-          GestureDetector(
-            onTap: onEditPhoto,
-            child: Stack(
-              alignment: Alignment.bottomRight,
-              children: [
-                CircleAvatar(
-                  radius: 50,
-                  backgroundColor: const Color(0xFFEBF4FF),
-                  backgroundImage:
-                      imageUrl.isNotEmpty ? NetworkImage(imageUrl) : null,
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              ClipOval(
+                child: Container(
+                  width: 116,
+                  height: 116,
+                  color: const Color(0xFFEBF4FF),
                   child: imageUrl.isEmpty
-                      ? Text(
-                          _initials,
-                          style: const TextStyle(
-                            fontSize: 28,
-                            color: AppTheme.navy,
-                            fontWeight: FontWeight.w700,
-                          ),
+                      ? const Icon(
+                          Icons.person_rounded,
+                          size: 64,
+                          color: AppTheme.blue,
                         )
-                      : null,
-                ),
-                Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    color: AppTheme.blue,
-                    borderRadius: BorderRadius.circular(17),
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  child: uploading
-                      ? const Padding(
-                          padding: EdgeInsets.all(7),
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(
-                          Icons.camera_alt_rounded,
-                          color: Colors.white,
-                          size: 16,
+                      : Image.network(
+                          imageUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) =>
+                              const Icon(
+                                Icons.person_rounded,
+                                size: 64,
+                                color: AppTheme.blue,
+                              ),
                         ),
                 ),
-              ],
+              ),
+              Positioned(
+                right: -2,
+                bottom: -2,
+                child: Material(
+                  color: AppTheme.blue,
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    onTap: uploading ? null : onEditPhoto,
+                    customBorder: const CircleBorder(),
+                    child: SizedBox(
+                      width: 36,
+                      height: 36,
+                      child: Center(
+                        child: uploading
+                            ? const SizedBox.square(
+                                dimension: 17,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.camera_alt_rounded,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            displayName,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppTheme.navy,
+              fontSize: 23,
+              fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(width: 18),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  displayName,
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.navy,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  displayEmail,
-                  style: const TextStyle(
-                    color: AppTheme.mutedBlue,
-                    fontSize: 14,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: user.emailVerified
-                        ? const Color(0xFFE8F9F1)
-                        : const Color(0xFFFFF4D9),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        user.emailVerified
-                            ? Icons.verified_rounded
-                            : Icons.info_outline_rounded,
-                        size: 14,
-                        color: user.emailVerified
-                            ? const Color(0xFF1B9A67)
-                            : const Color(0xFFB87B00),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        user.emailVerified ? 'Verified account' : 'Verification pending',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: user.emailVerified
-                              ? const Color(0xFF1B9A67)
-                              : const Color(0xFFB87B00),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+          const SizedBox(height: 5),
+          Text(
+            displayEmail,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: AppTheme.mutedBlue, fontSize: 14),
           ),
-          IconButton.filledTonal(
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
             onPressed: onEditProfile,
-            tooltip: 'Edit profile',
-            icon: const Icon(Icons.edit_outlined),
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            label: const Text('Edit profile'),
           ),
         ],
       ),
@@ -934,39 +1009,28 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _PersonalInfoCard extends StatelessWidget {
-  const _PersonalInfoCard({
-    required this.profile,
-    required this.email,
-    required this.createdAt,
-    required this.onEdit,
-  });
+  const _PersonalInfoCard({required this.profile, required this.createdAt});
 
   final UserModel profile;
-  final String email;
   final DateTime? createdAt;
-  final VoidCallback onEdit;
 
   @override
   Widget build(BuildContext context) {
-    final rows = <_InfoRowData>[
-      _InfoRowData(
-        label: 'Full name',
-        value: profile.name.trim().isEmpty ? 'Not provided' : profile.name,
-      ),
-      _InfoRowData(
-        label: 'Email',
-        value: email.trim().isEmpty ? 'Not provided' : email,
-      ),
-      _InfoRowData(
+    final items = <_PersonalInfoItem>[
+      _PersonalInfoItem(
+        icon: Icons.phone_outlined,
         label: 'Phone',
         value: profile.phone.trim().isEmpty ? 'Not provided' : profile.phone,
       ),
-      _InfoRowData(
-        label: 'Location',
-        value: profile.city.trim().isEmpty ? 'Not provided' : profile.city,
-      ),
-      _InfoRowData(
-        label: 'Joined',
+      if (profile.city.trim().isNotEmpty)
+        _PersonalInfoItem(
+          icon: Icons.location_on_outlined,
+          label: 'Location',
+          value: profile.city.trim(),
+        ),
+      _PersonalInfoItem(
+        icon: Icons.calendar_month_outlined,
+        label: 'Member since',
         value: createdAt == null
             ? 'Not provided'
             : MaterialLocalizations.of(context).formatMediumDate(createdAt!),
@@ -974,54 +1038,105 @@ class _PersonalInfoCard extends StatelessWidget {
     ];
 
     return Container(
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: const Color(0xFFE5EBF0)),
       ),
       child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 20, 10),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Account details',
-                    style: TextStyle(
-                      color: AppTheme.navy,
-                      fontWeight: FontWeight.w700,
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final width = (constraints.maxWidth - 12) / 2;
+              return Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  for (final item in items)
+                    SizedBox(
+                      width: width,
+                      child: _PersonalInfoTile(item: item),
                     ),
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: onEdit,
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  label: const Text('Edit'),
-                ),
-              ],
-            ),
+                ],
+              );
+            },
           ),
-          ...rows.asMap().entries.map((entry) {
-            final index = entry.key;
-            final row = entry.value;
-            return _InfoRow(
-              label: row.label,
-              value: row.value,
-              isLast: index == rows.length - 1,
-            );
-          }),
         ],
       ),
     );
   }
 }
 
+class _PersonalInfoItem {
+  const _PersonalInfoItem({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+}
+
+class _PersonalInfoTile extends StatelessWidget {
+  const _PersonalInfoTile({required this.item});
+
+  final _PersonalInfoItem item;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    constraints: const BoxConstraints(minHeight: 92),
+    padding: const EdgeInsets.all(13),
+    decoration: BoxDecoration(
+      color: AppTheme.background,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: const Color(0xFFE8EDF2)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(item.icon, size: 17, color: AppTheme.blue),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                item.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: AppTheme.mutedBlue, fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Text(
+          item.value,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: AppTheme.navy,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _VehicleSummaryCard extends StatefulWidget {
-  const _VehicleSummaryCard({required this.firestore, required this.vehicleId});
+  const _VehicleSummaryCard({
+    required this.firestore,
+    required this.vehicleId,
+    required this.distanceUnit,
+  });
 
   final FirestoreService firestore;
   final String vehicleId;
+  final String distanceUnit;
 
   @override
   State<_VehicleSummaryCard> createState() => _VehicleSummaryCardState();
@@ -1120,7 +1235,9 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            vehicle.model.isEmpty ? 'Model not provided' : vehicle.model,
+                            vehicle.model.isEmpty
+                                ? 'Model not provided'
+                                : vehicle.model,
                             style: const TextStyle(
                               color: AppTheme.navy,
                               fontSize: 20,
@@ -1149,7 +1266,10 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                 const SizedBox(height: 18),
                 Row(
                   children: [
-                    const Icon(Icons.bluetooth_rounded, color: AppTheme.mutedBlue),
+                    const Icon(
+                      Icons.bluetooth_rounded,
+                      color: AppTheme.mutedBlue,
+                    ),
                     const SizedBox(width: 8),
                     Text(
                       connectionLabel,
@@ -1179,7 +1299,11 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                         label: 'Range',
                         value: telemetry == null
                             ? '—'
-                            : '${telemetry.range.round()} km',
+                            : DistanceUnitService.format(
+                                telemetry.range,
+                                widget.distanceUnit,
+                                decimals: 0,
+                              ),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -1240,61 +1364,6 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
   );
 }
 
-class _InfoRowData {
-  const _InfoRowData({required this.label, required this.value});
-
-  final String label;
-  final String value;
-}
-
-class _InfoRow extends StatelessWidget {
-  const _InfoRow({
-    required this.label,
-    required this.value,
-    this.isLast = false,
-  });
-
-  final String label;
-  final String value;
-  final bool isLast;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 110,
-              child: Text(
-                label,
-                style: const TextStyle(
-                  color: AppTheme.mutedBlue,
-                  fontSize: 13,
-                ),
-              ),
-            ),
-            Expanded(
-              child: Text(
-                value,
-                textAlign: TextAlign.end,
-                style: const TextStyle(
-                  color: AppTheme.navy,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-      if (!isLast) const Divider(height: 1, indent: 20, endIndent: 20),
-    ],
-  );
-}
-
 class _TelemetryTile extends StatelessWidget {
   const _TelemetryTile({
     required this.icon,
@@ -1320,10 +1389,7 @@ class _TelemetryTile extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           label,
-          style: const TextStyle(
-            color: AppTheme.mutedBlue,
-            fontSize: 11,
-          ),
+          style: const TextStyle(color: AppTheme.mutedBlue, fontSize: 11),
         ),
         const SizedBox(height: 4),
         Text(
@@ -1471,10 +1537,7 @@ class _ProfileStateMessage extends StatelessWidget {
             const SizedBox(height: 10),
             Text(
               message,
-              style: const TextStyle(
-                color: AppTheme.mutedBlue,
-                height: 1.5,
-              ),
+              style: const TextStyle(color: AppTheme.mutedBlue, height: 1.5),
             ),
             if (actionLabel != null && onAction != null) ...[
               const SizedBox(height: 12),
@@ -1513,4 +1576,3 @@ class _SignedOutView extends StatelessWidget {
     ),
   );
 }
-

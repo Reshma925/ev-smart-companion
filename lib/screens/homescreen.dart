@@ -1,19 +1,21 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
 import '../models/vehicle.dart';
-import '../services/auth_service.dart';
+import '../models/vehicle_telemetry.dart';
+import '../services/distance_unit_service.dart';
 import '../services/firestore_service.dart';
-import '../services/vehicle_simulator.dart';
 import '../services/weather_service.dart';
 import '../widgets/weather_card.dart';
 import 'charging_station_page.dart';
-import 'login_page.dart';
 import 'maintenance.dart';
 import 'profile_page.dart';
 import 'trip_planner.dart';
 import 'vehicle_health_page.dart';
+import 'vehicle_details_page.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.vehicle});
@@ -28,32 +30,48 @@ class _DashboardIdentity {
   const _DashboardIdentity({
     required this.name,
     required this.vehicle,
-    required this.simulator,
+    required this.telemetry,
   });
 
   final String name;
   final Vehicle vehicle;
-  final VehicleSimulator simulator;
+  final Stream<VehicleData?> telemetry;
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final AuthService authService = AuthService();
   final FirestoreService firestoreService = FirestoreService();
   final WeatherService weatherService = WeatherService();
   late Future<_DashboardIdentity> dashboardIdentity;
-  VehicleSimulator? simulator;
+  StreamSubscription<Vehicle?>? _vehicleSubscription;
+  Vehicle? _latestVehicle;
+  String? _vehicleStreamError;
+  String _distanceUnit = 'km';
   int navIndex = 0;
-  bool loggingOut = false;
 
   @override
   void initState() {
     super.initState();
     dashboardIdentity = _loadDashboardIdentity();
+    _loadDistanceUnitPreference();
+  }
+
+  Future<void> _loadDistanceUnitPreference() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final profile = await firestoreService.getUserProfile(uid);
+      if (!mounted) return;
+      setState(() {
+        _distanceUnit = DistanceUnitService.normalize(profile?.distanceUnit);
+      });
+    } catch (_) {
+      // Keep the kilometre default if the preference cannot be loaded.
+    }
   }
 
   @override
   void dispose() {
-    simulator?.stop();
+    _vehicleSubscription?.cancel();
     weatherService.dispose();
     super.dispose();
   }
@@ -82,14 +100,39 @@ class _HomeScreenState extends State<HomeScreen> {
         'Your registered vehicle is missing or inactive in Firestore.',
       );
     }
+    await _vehicleSubscription?.cancel();
+    _latestVehicle = vehicle;
+    _vehicleStreamError = null;
+    _vehicleSubscription = firestoreService
+        .watchVehicleById(vehicleId)
+        .listen(
+          (updatedVehicle) {
+            if (!mounted) return;
+            if (updatedVehicle == null) {
+              setState(
+                () => _vehicleStreamError =
+                    'The registered vehicle is no longer available in Firestore.',
+              );
+              return;
+            }
+            setState(() {
+              _latestVehicle = updatedVehicle;
+              _vehicleStreamError = null;
+            });
+          },
+          onError: (Object error) {
+            if (!mounted) return;
+            setState(
+              () => _vehicleStreamError =
+                  'Could not refresh vehicle data from Firestore: $error',
+            );
+          },
+        );
 
-    simulator?.stop();
-    final liveSimulator = VehicleSimulator(vehicleId: vehicle.id)..start();
-    simulator = liveSimulator;
     return _DashboardIdentity(
       name: profile.name,
       vehicle: vehicle,
-      simulator: liveSimulator,
+      telemetry: firestoreService.watchVehicleTelemetry(vehicle.id),
     );
   }
 
@@ -102,28 +145,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (hour < 12) return 'Good morning';
     if (hour < 17) return 'Good afternoon';
     return 'Good evening';
-  }
-
-  Future<void> logout() async {
-    if (loggingOut) return;
-    setState(() => loggingOut = true);
-    try {
-      await authService.signOut();
-      if (!mounted) return;
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const LoginPage()),
-        (route) => false,
-      );
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to log out. Please try again.')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => loggingOut = false);
-    }
   }
 
   void openChargingMap() {
@@ -139,7 +160,10 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       MaterialPageRoute(builder: (_) => const ProfilePage()),
     );
-    if (mounted) setState(() => navIndex = 0);
+    if (mounted) {
+      setState(() => navIndex = 0);
+      _loadDistanceUnitPreference();
+    }
   }
 
   @override
@@ -163,8 +187,15 @@ class _HomeScreenState extends State<HomeScreen> {
             }
 
             final identity = identitySnapshot.data!;
-            return StreamBuilder<VehicleData>(
-              stream: identity.simulator.stream,
+            if (_vehicleStreamError != null) {
+              return _LoadError(
+                message: _vehicleStreamError!,
+                onRetry: retryLoadingIdentity,
+              );
+            }
+            final vehicle = _latestVehicle ?? identity.vehicle;
+            return StreamBuilder<VehicleData?>(
+              stream: identity.telemetry,
               builder: (context, telemetrySnapshot) {
                 if (telemetrySnapshot.hasError) {
                   return _LoadError(
@@ -174,6 +205,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   );
                 }
                 if (!telemetrySnapshot.hasData) {
+                  if (telemetrySnapshot.connectionState ==
+                      ConnectionState.active) {
+                    return _LoadError(
+                      message:
+                          'No live vehicle telemetry is currently available in Firestore.',
+                      onRetry: retryLoadingIdentity,
+                    );
+                  }
                   return const Center(child: CircularProgressIndicator());
                 }
 
@@ -182,8 +221,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     final wide = constraints.maxWidth >= 900;
                     final data = telemetrySnapshot.data!;
                     final contentWidth = wide ? 1160.0 : 760.0;
-                    final batterySection = _BatteryPanel(data: data);
-                    final weatherSection = WeatherCard(service: weatherService);
+                    final batterySection = _BatteryPanel(
+                      data: data,
+                      distanceUnit: _distanceUnit,
+                    );
+                    final weatherSection = WeatherCard(
+                      service: weatherService,
+                      distanceUnit: _distanceUnit,
+                    );
                     final summary = _VehicleHealthSummary(data: data);
                     final actions = _QuickActions(
                       onCharging: openChargingMap,
@@ -191,23 +236,28 @@ class _HomeScreenState extends State<HomeScreen> {
                         context,
                         MaterialPageRoute(
                           builder: (_) => TripPlannerPage(
-                            battery: data.battery,
-                            range: data.range,
+                            vehicleId: vehicle.id,
+                            onConfigureVehicle: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    VehicleDetailsPage(vehicle: vehicle),
+                              ),
+                            ),
+                            distanceUnit: _distanceUnit,
                           ),
                         ),
                       ),
                       onHealth: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) =>
-                              VehicleHealthPage(vehicle: identity.vehicle),
+                          builder: (_) => VehicleHealthPage(vehicle: vehicle),
                         ),
                       ),
                       onMaintenance: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) =>
-                              MaintenancePage(vehicle: identity.vehicle),
+                          builder: (_) => MaintenancePage(vehicle: vehicle),
                         ),
                       ),
                     );
@@ -229,14 +279,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                   _DashboardHeader(
                                     greeting: greeting(),
                                     name: identity.name,
-                                    loggingOut: loggingOut,
-                                    onLogout: logout,
+                                    onProfile: openProfile,
                                   ),
                                   const SizedBox(height: 22),
-                                  _VehicleHero(
-                                    vehicle: identity.vehicle,
-                                    data: data,
-                                  ),
+                                  _VehicleHero(vehicle: vehicle, data: data),
                                   const SizedBox(height: 18),
                                   if (wide)
                                     Row(
@@ -317,14 +363,12 @@ class _DashboardHeader extends StatelessWidget {
   const _DashboardHeader({
     required this.greeting,
     required this.name,
-    required this.loggingOut,
-    required this.onLogout,
+    required this.onProfile,
   });
 
   final String greeting;
   final String name;
-  final bool loggingOut;
-  final VoidCallback onLogout;
+  final VoidCallback onProfile;
 
   @override
   Widget build(BuildContext context) => Row(
@@ -366,38 +410,13 @@ class _DashboardHeader extends StatelessWidget {
           ],
         ),
       ),
-      PopupMenuButton<String>(
-        tooltip: 'Profile and account',
-        onSelected: (value) {
-          if (value == 'logout') onLogout();
-        },
-        itemBuilder: (context) => [
-          PopupMenuItem<String>(
-            value: 'account',
-            enabled: false,
-            child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          const PopupMenuDivider(),
-          PopupMenuItem<String>(
-            value: 'logout',
-            child: Row(
-              children: [
-                const Icon(Icons.logout_rounded, size: 18),
-                const SizedBox(width: 10),
-                Text(loggingOut ? 'Signing out…' : 'Log out'),
-              ],
-            ),
-          ),
-        ],
-        child: CircleAvatar(
+      IconButton(
+        tooltip: 'Open profile',
+        onPressed: onProfile,
+        icon: const CircleAvatar(
           radius: 21,
           backgroundColor: Colors.white,
-          child: loggingOut
-              ? const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.person_outline_rounded, color: AppTheme.navy),
+          child: Icon(Icons.person_outline_rounded, color: AppTheme.navy),
         ),
       ),
     ],
@@ -557,13 +576,19 @@ class _VehicleHero extends StatelessWidget {
 }
 
 class _BatteryPanel extends StatelessWidget {
-  const _BatteryPanel({required this.data});
+  const _BatteryPanel({required this.data, required this.distanceUnit});
 
   final VehicleData data;
+  final String distanceUnit;
 
   @override
   Widget build(BuildContext context) {
     final battery = (data.battery / 100).clamp(0.0, 1.0);
+    final displayRange = DistanceUnitService.format(
+      data.range,
+      distanceUnit,
+      decimals: 0,
+    );
     return Container(
       padding: const EdgeInsets.all(21),
       decoration: BoxDecoration(
@@ -638,7 +663,7 @@ class _BatteryPanel extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${data.range.round()}',
+                      displayRange.split(' ').first,
                       style: const TextStyle(
                         color: AppTheme.navy,
                         fontSize: 39,
@@ -648,9 +673,12 @@ class _BatteryPanel extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      'km estimated range',
-                      style: TextStyle(color: AppTheme.mutedBlue, fontSize: 12),
+                    Text(
+                      '${DistanceUnitService.normalize(distanceUnit) == DistanceUnitService.mi ? 'mi' : 'km'} estimated range',
+                      style: const TextStyle(
+                        color: AppTheme.mutedBlue,
+                        fontSize: 12,
+                      ),
                     ),
                     const SizedBox(height: 14),
                     _ChargeBadge(isCharging: data.isCharging),

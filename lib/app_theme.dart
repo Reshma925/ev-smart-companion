@@ -13,6 +13,7 @@ class AppTheme {
       seedColor: blue,
       primary: navy,
       surface: Colors.white,
+      brightness: Brightness.light,
     ),
     fontFamily: 'Arial',
     inputDecorationTheme: InputDecorationTheme(

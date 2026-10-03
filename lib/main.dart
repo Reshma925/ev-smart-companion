@@ -1,8 +1,9 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+
+import 'app_theme.dart';
 import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
-import 'app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +19,7 @@ class EVSmartCompanionApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: AppTheme.data,
+      themeMode: ThemeMode.light,
       home: const EVHomePage(),
     );
   }

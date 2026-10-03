@@ -1,15 +1,22 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../app_theme.dart';
 import '../models/weather_data.dart';
+import '../services/distance_unit_service.dart';
 import '../services/weather_service.dart';
 
 class WeatherCard extends StatefulWidget {
-  const WeatherCard({super.key, required this.service});
+  const WeatherCard({
+    super.key,
+    required this.service,
+    required this.distanceUnit,
+  });
 
   final WeatherService service;
+  final String distanceUnit;
 
   @override
   State<WeatherCard> createState() => _WeatherCardState();
@@ -23,6 +30,7 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
   bool _waitingForSettings = false;
   bool _hasLoadedWeather = false;
   bool _refreshing = true;
+  LatLng? _currentLocation;
   WeatherData? _lastWeather;
   Object? _lastError;
 
@@ -54,6 +62,9 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
   Future<WeatherData> _loadWeather() async {
     try {
       final data = await widget.service.fetchCurrentConditions(
+        onLocation: (position) {
+          if (mounted) setState(() => _currentLocation = position);
+        },
         onStage: (stage) {
           if (mounted && _stage != stage) {
             setState(() => _stage = stage);
@@ -81,6 +92,7 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
     setState(() {
       _refreshing = true;
       _stage = WeatherLoadStage.checkingPermission;
+      _currentLocation = null;
       _weather = _loadWeather();
     });
   }
@@ -142,7 +154,7 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
               if (_refreshing && data == null)
                 _WeatherLoading(label: _weatherStageLabel(_stage))
               else if (data != null) ...[
-                _WeatherContent(data: data),
+                _WeatherContent(data: data, distanceUnit: widget.distanceUnit),
                 if (_refreshing) ...[
                   const SizedBox(height: 12),
                   _WeatherLoading(label: _weatherStageLabel(_stage)),
@@ -169,6 +181,30 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
                 )
               else
                 _WeatherLoading(label: _weatherStageLabel(_stage)),
+              if (_currentLocation != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.my_location_rounded,
+                      color: AppTheme.blue,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Current location detected · '
+                        '${_currentLocation!.latitude.toStringAsFixed(4)}, '
+                        '${_currentLocation!.longitude.toStringAsFixed(4)}',
+                        style: const TextStyle(
+                          color: AppTheme.mutedBlue,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         );
@@ -180,7 +216,7 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
     if (error is WeatherPermissionException) {
       if (error.permanentlyDenied) {
         return error.isWeb
-            ? 'Location permission is blocked. Enable it for localhost in your browser settings, then retry.'
+            ? 'Location access is blocked. Enable it for this site in your browser settings, then retry.'
             : 'Location permission is disabled for this app. Open app settings and allow location to see local driving conditions.';
       }
       return error.isWeb
@@ -188,7 +224,7 @@ class _WeatherCardState extends State<WeatherCard> with WidgetsBindingObserver {
           : 'Location permission is required to show local driving conditions.';
     }
     if (error is WeatherServiceException) return error.message;
-    return 'Weather could not be loaded: $error';
+    return 'Driving conditions could not be loaded. Check location access and your connection, then retry.';
   }
 }
 
@@ -215,9 +251,9 @@ class _WeatherLoading extends StatelessWidget {
 }
 
 String _weatherStageLabel(WeatherLoadStage stage) => switch (stage) {
-  WeatherLoadStage.checkingPermission => 'Checking location access…',
-  WeatherLoadStage.requestingPermission => 'Requesting location permission…',
-  WeatherLoadStage.gettingLocation => 'Getting your location…',
+  WeatherLoadStage.checkingPermission => 'Detecting your current location…',
+  WeatherLoadStage.requestingPermission => 'Detecting your current location…',
+  WeatherLoadStage.gettingLocation => 'Detecting your current location…',
   WeatherLoadStage.fetchingWeather => 'Fetching local weather…',
 };
 
@@ -306,17 +342,20 @@ class _WeatherError extends StatelessWidget {
   );
 
   String _stageLabel(WeatherLoadStage stage) => switch (stage) {
-    WeatherLoadStage.checkingPermission => 'Checking location access…',
-    WeatherLoadStage.requestingPermission => 'Requesting location permission…',
-    WeatherLoadStage.gettingLocation => 'Getting your location…',
+    WeatherLoadStage.checkingPermission =>
+      'Detecting your current location…',
+    WeatherLoadStage.requestingPermission =>
+      'Detecting your current location…',
+    WeatherLoadStage.gettingLocation => 'Detecting your current location…',
     WeatherLoadStage.fetchingWeather => 'Fetching local weather…',
   };
 }
 
 class _WeatherContent extends StatelessWidget {
-  const _WeatherContent({required this.data});
+  const _WeatherContent({required this.data, required this.distanceUnit});
 
   final WeatherData data;
+  final String distanceUnit;
 
   @override
   Widget build(BuildContext context) {
@@ -364,7 +403,7 @@ class _WeatherContent extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    'Feels like ${data.feelsLikeC.round()}° · ${data.locationLabel}',
+                    'Feels like ${data.feelsLikeC.round()}°C · ${data.locationLabel}',
                     style: const TextStyle(color: AppTheme.mutedBlue),
                   ),
                 ],
@@ -383,13 +422,14 @@ class _WeatherContent extends StatelessWidget {
             ),
             _WeatherMetric(
               icon: Icons.air_rounded,
-              label: 'Wind ${data.windSpeedKmh.round()} km/h',
+              label:
+                  'Wind ${DistanceUnitService.formatSpeed(data.windSpeedKmh, distanceUnit)}',
             ),
             if (data.visibilityMeters != null)
               _WeatherMetric(
                 icon: Icons.visibility_outlined,
                 label:
-                    'Visibility ${(data.visibilityMeters! / 1000).toStringAsFixed(1)} km',
+                    'Visibility ${DistanceUnitService.format(data.visibilityMeters! / 1000, distanceUnit, decimals: 1)}',
               ),
             _WeatherMetric(
               icon: Icons.umbrella_outlined,

@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
 import '../models/vehicle.dart';
-import '../services/vehicle_simulator.dart';
+import '../models/vehicle_telemetry.dart';
+import '../services/firestore_service.dart';
 
 class VehicleHealthPage extends StatefulWidget {
   const VehicleHealthPage({super.key, required this.vehicle});
@@ -14,9 +15,10 @@ class VehicleHealthPage extends StatefulWidget {
 }
 
 class _VehicleHealthPageState extends State<VehicleHealthPage> {
-  late final Stream<VehicleData> _telemetryStream = VehicleSimulator(
-    vehicleId: widget.vehicle.id,
-  ).stream;
+  late final Stream<Vehicle?> _vehicleStream = FirestoreService()
+      .watchVehicleById(widget.vehicle.id);
+  late final Stream<VehicleData?> _telemetryStream = FirestoreService()
+      .watchVehicleTelemetry(widget.vehicle.id);
 
   String _scoreStatus(int score) {
     if (score >= 85) return 'Excellent';
@@ -124,7 +126,7 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
         backgroundColor: AppTheme.background,
       ),
       backgroundColor: AppTheme.background,
-      body: StreamBuilder<VehicleData>(
+      body: StreamBuilder<VehicleData?>(
         stream: _telemetryStream,
         builder: (context, snap) {
           if (snap.hasError) {
@@ -135,6 +137,14 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
             );
           }
           if (!snap.hasData) {
+            if (snap.connectionState == ConnectionState.active) {
+              return _LoadState(
+                title: 'Vehicle telemetry unavailable',
+                message:
+                    'No live vehicle telemetry is currently available in Firestore.',
+                onRetry: () => setState(() {}),
+              );
+            }
             return const Center(child: CircularProgressIndicator());
           }
 
@@ -247,15 +257,44 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                       ),
                     ),
                     const SizedBox(height: 10),
-                    text(widget.vehicle.model, 20, FontWeight.w700, AppTheme.navy),
-                    const SizedBox(height: 4),
-                    text(
-                      widget.vehicle.registrationNumber.isEmpty
-                          ? 'Registration not provided'
-                          : widget.vehicle.registrationNumber,
-                      13,
-                      FontWeight.w500,
-                      AppTheme.mutedBlue,
+                    StreamBuilder<Vehicle?>(
+                      stream: _vehicleStream,
+                      builder: (context, vehicleSnapshot) {
+                        final vehicle = vehicleSnapshot.data;
+                        if (vehicleSnapshot.hasError) {
+                          return const Text(
+                            'Could not refresh vehicle details from Firebase.',
+                            style: TextStyle(color: Colors.redAccent),
+                          );
+                        }
+                        if (vehicle == null) {
+                          return const Text(
+                            'Loading vehicle details from Firebase…',
+                            style: TextStyle(color: AppTheme.mutedBlue),
+                          );
+                        }
+                        return Column(
+                          children: [
+                            text(
+                              vehicle.model.isEmpty
+                                  ? 'Vehicle model not available'
+                                  : vehicle.model,
+                              20,
+                              FontWeight.w700,
+                              AppTheme.navy,
+                            ),
+                            const SizedBox(height: 4),
+                            text(
+                              vehicle.registrationNumber.isEmpty
+                                  ? 'Registration not available'
+                                  : vehicle.registrationNumber,
+                              13,
+                              FontWeight.w500,
+                              AppTheme.mutedBlue,
+                            ),
+                          ],
+                        );
+                      },
                     ),
                     const SizedBox(height: 10),
                     Container(

@@ -58,11 +58,40 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['name', 'email', 'phone', 'updatedAt']);
       allow delete: if false;
+
+      match /chargingCard/{cardId} {
+        allow read: if ownsUser(uid);
+        allow write: if false;
+
+        match /transactions/{transactionId} {
+          allow read: if ownsUser(uid);
+          allow write: if false;
+        }
+      }
     }
 
     match /vehicles/{vehicleId} {
       allow read: if signedIn();
-      allow create, update, delete: if false;
+      allow create, delete: if false;
+      allow update: if ownsVehicle(vehicleId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly([
+            'maximumRangeKm',
+            'batteryCapacityKwh',
+            'connectorType',
+            'updatedAt'
+          ])
+        && request.resource.data.maximumRangeKm is number
+        && request.resource.data.maximumRangeKm > 0
+        && (
+          !request.resource.data.keys().hasAny(['batteryCapacityKwh'])
+          || (
+            request.resource.data.batteryCapacityKwh is number
+            && request.resource.data.batteryCapacityKwh > 0
+          )
+        )
+        && request.resource.data.connectorType is string
+        && request.resource.data.updatedAt is timestamp;
 
       match /telemetry/{telemetryId} {
         allow read, create, update: if ownsVehicle(vehicleId);

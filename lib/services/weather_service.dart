@@ -1,26 +1,61 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart';
 
 import '../models/weather_data.dart';
+import 'location_service.dart';
 
 class WeatherService {
-  WeatherService({http.Client? client})
+  WeatherService({http.Client? client, LocationService? locationService})
     : _client = client ?? http.Client(),
+      _locationService = locationService ?? LocationService(),
       _ownsClient = client == null;
 
   final http.Client _client;
+  final LocationService _locationService;
   final bool _ownsClient;
   bool get isWeb => kIsWeb;
 
   Future<WeatherData> fetchCurrentConditions({
     void Function(WeatherLoadStage stage)? onStage,
+    void Function(LatLng position)? onLocation,
   }) async {
     onStage?.call(WeatherLoadStage.checkingPermission);
-    final position = await _requestCurrentPosition(onStage: onStage);
+    final resolution = await _locationService.resolveCurrentLocation(
+      accuracy: LocationAccuracy.low,
+      timeLimit: const Duration(seconds: 12),
+      onStage: (stage) {
+        onStage?.call(
+          switch (stage) {
+            LocationStage.checkingPermission =>
+              WeatherLoadStage.checkingPermission,
+            LocationStage.requestingPermission =>
+              WeatherLoadStage.requestingPermission,
+            LocationStage.gettingLocation => WeatherLoadStage.gettingLocation,
+          },
+        );
+      },
+    );
+    final position = resolution.position;
+    if (position == null) {
+      if (!resolution.serviceEnabled) {
+        throw WeatherLocationException(resolution.message);
+      }
+      if (!resolution.permissionGranted || resolution.permanentlyDenied) {
+        throw WeatherPermissionException(
+          permanentlyDenied: resolution.permanentlyDenied,
+          isWeb: isWeb,
+          message: resolution.message,
+        );
+      }
+      throw WeatherLocationException(resolution.message);
+    }
+    onLocation?.call(position);
+
     final locationLabel =
         '${position.latitude.toStringAsFixed(2)}°, ${position.longitude.toStringAsFixed(2)}°';
     final uri = Uri.https('api.open-meteo.com', '/v1/forecast', {
@@ -41,99 +76,37 @@ class WeatherService {
     });
 
     onStage?.call(WeatherLoadStage.fetchingWeather);
-    final response = await _client
-        .get(uri)
-        .timeout(const Duration(seconds: 12));
-    if (response.statusCode != 200) {
-      throw WeatherServiceException(
-        'Weather service returned HTTP ${response.statusCode}.',
+    late final http.Response response;
+    try {
+      response = await _client.get(uri).timeout(const Duration(seconds: 12));
+    } on TimeoutException catch (error, stackTrace) {
+      debugPrint('Weather request timed out: $error\n$stackTrace');
+      throw const WeatherServiceException(
+        'Local driving conditions could not be loaded. Check your connection and retry.',
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Weather request failed: $error\n$stackTrace');
+      throw const WeatherServiceException(
+        'Local driving conditions are temporarily unavailable. Please retry.',
       );
     }
-
-    final decoded = jsonDecode(response.body);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('Weather service returned invalid data.');
-    }
-    return WeatherData.fromOpenMeteo(decoded, locationLabel: locationLabel);
-  }
-
-  Future<Position> _requestCurrentPosition({
-    void Function(WeatherLoadStage stage)? onStage,
-  }) async {
-    var permission = await Geolocator.checkPermission();
-    if (kIsWeb && permission == LocationPermission.deniedForever) {
-      throw WeatherPermissionException(permanentlyDenied: true, isWeb: kIsWeb);
-    }
-    if (!kIsWeb && permission == LocationPermission.deniedForever) {
-      throw WeatherPermissionException(permanentlyDenied: true, isWeb: false);
-    }
-    if (!kIsWeb &&
-        (permission == LocationPermission.denied ||
-            permission == LocationPermission.unableToDetermine)) {
-      onStage?.call(WeatherLoadStage.requestingPermission);
-      permission = await Geolocator.requestPermission();
-    }
-    if (!kIsWeb && permission == LocationPermission.deniedForever) {
-      throw WeatherPermissionException(permanentlyDenied: true, isWeb: kIsWeb);
-    }
-    if (!kIsWeb &&
-        permission != LocationPermission.whileInUse &&
-        permission != LocationPermission.always) {
-      throw WeatherPermissionException(permanentlyDenied: false, isWeb: kIsWeb);
-    }
-
-    if (!kIsWeb && !await Geolocator.isLocationServiceEnabled()) {
-      throw const WeatherLocationException(
-        'Location services are turned off. Turn them on to see local driving conditions.',
+    if (response.statusCode != 200) {
+      debugPrint('Weather service returned HTTP ${response.statusCode}.');
+      throw const WeatherServiceException(
+        'Local driving conditions are temporarily unavailable. Please retry.',
       );
     }
 
     try {
-      // Web geolocation prompts through getCurrentPosition itself. Calling
-      // requestPermission first loses browser error details and can mistake
-      // an unrequested browser prompt for a denial.
-      onStage?.call(
-        kIsWeb &&
-                (permission == LocationPermission.denied ||
-                    permission == LocationPermission.unableToDetermine)
-            ? WeatherLoadStage.requestingPermission
-            : WeatherLoadStage.gettingLocation,
-      );
-      return await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.low,
-          timeLimit: Duration(seconds: 12),
-        ),
-      ).timeout(const Duration(seconds: 15));
-    } on PermissionDeniedException {
-      if (kIsWeb &&
-          (permission == LocationPermission.denied ||
-              permission == LocationPermission.unableToDetermine)) {
-        throw WeatherPermissionException(permanentlyDenied: false, isWeb: true);
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Weather service returned invalid data.');
       }
-      throw WeatherPermissionException(
-        permanentlyDenied: kIsWeb,
-        isWeb: kIsWeb,
-      );
-    } on LocationServiceDisabledException {
-      throw const WeatherLocationException(
-        'Location services are turned off. Turn them on to see local driving conditions.',
-      );
-    } on PositionUpdateException {
-      throw const WeatherLocationException(
-        'Your location is currently unavailable. Check that location services are enabled for this device and retry.',
-      );
-    } on TimeoutException {
-      throw const WeatherLocationException(
-        'Your location could not be determined in time. Check location settings and retry.',
-      );
-    } catch (error) {
-      if (error is WeatherPermissionException ||
-          error is WeatherLocationException) {
-        rethrow;
-      }
-      throw WeatherLocationException(
-        'Unable to determine your location: $error',
+      return WeatherData.fromOpenMeteo(decoded, locationLabel: locationLabel);
+    } catch (error, stackTrace) {
+      debugPrint('Weather service returned invalid data: $error\n$stackTrace');
+      throw const WeatherServiceException(
+        'Local driving conditions could not be read. Please retry.',
       );
     }
   }
@@ -168,9 +141,8 @@ class WeatherPermissionException extends WeatherServiceException {
   const WeatherPermissionException({
     required this.permanentlyDenied,
     required this.isWeb,
-  }) : super(
-         'Location permission is required to show local driving conditions.',
-       );
+    required String message,
+  }) : super(message);
 
   final bool permanentlyDenied;
   final bool isWeb;

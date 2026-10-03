@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
 import '../models/vehicle.dart';
+import '../services/firestore_service.dart';
 
 class MaintenancePage extends StatefulWidget {
   const MaintenancePage({super.key, required this.vehicle});
@@ -15,15 +16,16 @@ class MaintenancePage extends StatefulWidget {
 
 class _MaintenancePageState extends State<MaintenancePage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  late final Stream<Vehicle?> _vehicleStream = FirestoreService()
+      .watchVehicleById(widget.vehicle.id);
 
   CollectionReference<Map<String, dynamic>> get _collection => _firestore
       .collection('vehicles')
       .doc(widget.vehicle.id)
       .collection('maintenance');
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> get _maintenanceStream => _collection
-      .orderBy('serviceDate', descending: true)
-      .snapshots();
+  Stream<QuerySnapshot<Map<String, dynamic>>> get _maintenanceStream =>
+      _collection.orderBy('serviceDate', descending: true).snapshots();
 
   Future<void> _addRecord() async {
     final formKey = GlobalKey<FormState>();
@@ -47,11 +49,13 @@ class _MaintenancePageState extends State<MaintenancePage> {
                 children: [
                   TextFormField(
                     controller: serviceTypeController,
-                    decoration: const InputDecoration(labelText: 'Service type'),
+                    decoration: const InputDecoration(
+                      labelText: 'Service type',
+                    ),
                     validator: (value) =>
                         (value == null || value.trim().isEmpty)
-                            ? 'Enter a service type.'
-                            : null,
+                        ? 'Enter a service type.'
+                        : null,
                   ),
                   const SizedBox(height: 12),
                   InkWell(
@@ -68,7 +72,9 @@ class _MaintenancePageState extends State<MaintenancePage> {
                       }
                     },
                     child: InputDecorator(
-                      decoration: const InputDecoration(labelText: 'Service date'),
+                      decoration: const InputDecoration(
+                        labelText: 'Service date',
+                      ),
                       child: Text(
                         serviceDate == null
                             ? 'Select date'
@@ -81,7 +87,9 @@ class _MaintenancePageState extends State<MaintenancePage> {
                     onTap: () async {
                       final picked = await showDatePicker(
                         context: dialogContext,
-                        initialDate: DateTime.now().add(const Duration(days: 30)),
+                        initialDate: DateTime.now().add(
+                          const Duration(days: 30),
+                        ),
                         firstDate: DateTime(2020),
                         lastDate: DateTime(2100),
                       );
@@ -91,7 +99,9 @@ class _MaintenancePageState extends State<MaintenancePage> {
                       }
                     },
                     child: InputDecorator(
-                      decoration: const InputDecoration(labelText: 'Next service date'),
+                      decoration: const InputDecoration(
+                        labelText: 'Next service date',
+                      ),
                       child: Text(
                         nextServiceDate == null
                             ? 'Select date'
@@ -102,13 +112,17 @@ class _MaintenancePageState extends State<MaintenancePage> {
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: serviceCenterController,
-                    decoration: const InputDecoration(labelText: 'Service center'),
+                    decoration: const InputDecoration(
+                      labelText: 'Service center',
+                    ),
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: costController,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Cost (optional)'),
+                    decoration: const InputDecoration(
+                      labelText: 'Cost (optional)',
+                    ),
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -132,7 +146,9 @@ class _MaintenancePageState extends State<MaintenancePage> {
                   Navigator.pop(dialogContext, true);
                 } else if (serviceDate == null) {
                   ScaffoldMessenger.of(dialogContext).showSnackBar(
-                    const SnackBar(content: Text('Please choose a service date.')),
+                    const SnackBar(
+                      content: Text('Please choose a service date.'),
+                    ),
                   );
                 }
               },
@@ -148,7 +164,9 @@ class _MaintenancePageState extends State<MaintenancePage> {
     final record = {
       'serviceType': serviceTypeController.text.trim(),
       'serviceDate': Timestamp.fromDate(serviceDate!),
-      'nextServiceDate': nextServiceDate == null ? null : Timestamp.fromDate(nextServiceDate!),
+      'nextServiceDate': nextServiceDate == null
+          ? null
+          : Timestamp.fromDate(nextServiceDate!),
       'serviceCenter': serviceCenterController.text.trim(),
       'cost': costController.text.trim(),
       'notes': notesController.text.trim(),
@@ -158,9 +176,9 @@ class _MaintenancePageState extends State<MaintenancePage> {
 
     await _collection.add(record);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Maintenance record saved.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Maintenance record saved.')));
   }
 
   void _showRecordDetails(Map<String, dynamic> data) {
@@ -197,20 +215,28 @@ class _MaintenancePageState extends State<MaintenancePage> {
               if (serviceDate != null)
                 _DetailRow(
                   label: 'Service date',
-                  value: '${serviceDate.day}/${serviceDate.month}/${serviceDate.year}',
+                  value:
+                      '${serviceDate.day}/${serviceDate.month}/${serviceDate.year}',
                 ),
               if (nextServiceDate != null)
                 _DetailRow(
                   label: 'Next service',
-                  value: '${nextServiceDate.day}/${nextServiceDate.month}/${nextServiceDate.year}',
+                  value:
+                      '${nextServiceDate.day}/${nextServiceDate.month}/${nextServiceDate.year}',
                 ),
               if ((data['serviceCenter'] as String? ?? '').isNotEmpty)
-                _DetailRow(label: 'Service center', value: data['serviceCenter'] as String),
+                _DetailRow(
+                  label: 'Service center',
+                  value: data['serviceCenter'] as String,
+                ),
               if ((data['cost'] as String? ?? '').isNotEmpty)
                 _DetailRow(label: 'Cost', value: data['cost'] as String),
               if ((data['notes'] as String? ?? '').isNotEmpty)
                 _DetailRow(label: 'Notes', value: data['notes'] as String),
-              _DetailRow(label: 'Status', value: (data['status'] as String?) ?? 'Completed'),
+              _DetailRow(
+                label: 'Status',
+                value: (data['status'] as String?) ?? 'Completed',
+              ),
             ],
           ),
         ),
@@ -252,7 +278,8 @@ class _MaintenancePageState extends State<MaintenancePage> {
             return _EmptyState(
               icon: Icons.build_rounded,
               title: 'No maintenance records yet',
-              message: 'Add the first service record for this vehicle to begin tracking maintenance history.',
+              message:
+                  'Add the first service record for this vehicle to begin tracking maintenance history.',
               actionLabel: 'Add record',
               onAction: _addRecord,
             );
@@ -261,33 +288,60 @@ class _MaintenancePageState extends State<MaintenancePage> {
           return ListView(
             padding: const EdgeInsets.fromLTRB(20, 18, 20, 96),
             children: [
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: const Color(0xFFE5EBF0)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      widget.vehicle.model,
-                      style: const TextStyle(
-                        color: AppTheme.navy,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                      ),
+              StreamBuilder<Vehicle?>(
+                stream: _vehicleStream,
+                builder: (context, vehicleSnapshot) {
+                  final vehicle = vehicleSnapshot.data;
+                  if (vehicleSnapshot.hasError) {
+                    return const _VehicleDataMessage(
+                      message:
+                          'Could not refresh vehicle details from Firebase.',
+                    );
+                  }
+                  if (vehicleSnapshot.connectionState ==
+                          ConnectionState.waiting &&
+                      vehicle == null) {
+                    return const _VehicleDataMessage(
+                      message: 'Loading vehicle details from Firebase…',
+                    );
+                  }
+                  if (vehicle == null) {
+                    return const _VehicleDataMessage(
+                      message:
+                          'This vehicle is no longer available in Firebase.',
+                    );
+                  }
+                  return Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: const Color(0xFFE5EBF0)),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.vehicle.registrationNumber.isEmpty
-                          ? 'Registration not provided'
-                          : widget.vehicle.registrationNumber,
-                      style: const TextStyle(color: AppTheme.mutedBlue),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          vehicle.model.isEmpty
+                              ? 'Vehicle model not available'
+                              : vehicle.model,
+                          style: const TextStyle(
+                            color: AppTheme.navy,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          vehicle.registrationNumber.isEmpty
+                              ? 'Registration not available'
+                              : vehicle.registrationNumber,
+                          style: const TextStyle(color: AppTheme.mutedBlue),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  );
+                },
               ),
               const SizedBox(height: 16),
               const Text(
@@ -301,7 +355,8 @@ class _MaintenancePageState extends State<MaintenancePage> {
               const SizedBox(height: 12),
               ...records.map((doc) {
                 final data = doc.data();
-                final serviceType = (data['serviceType'] as String?) ?? 'Service';
+                final serviceType =
+                    (data['serviceType'] as String?) ?? 'Service';
                 final status = (data['status'] as String?) ?? 'Completed';
                 final serviceDate = data['serviceDate'] is Timestamp
                     ? (data['serviceDate'] as Timestamp).toDate()
@@ -334,10 +389,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
                             color: color.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Icon(
-                            Icons.build_rounded,
-                            color: color,
-                          ),
+                          child: Icon(Icons.build_rounded, color: color),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -376,7 +428,10 @@ class _MaintenancePageState extends State<MaintenancePage> {
                           ),
                         ),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
                           decoration: BoxDecoration(
                             color: color.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(999),
@@ -403,6 +458,24 @@ class _MaintenancePageState extends State<MaintenancePage> {
   }
 }
 
+class _VehicleDataMessage extends StatelessWidget {
+  const _VehicleDataMessage({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFE5EBF0)),
+    ),
+    child: Text(message, style: const TextStyle(color: AppTheme.mutedBlue)),
+  );
+}
+
 class _DetailRow extends StatelessWidget {
   const _DetailRow({required this.label, required this.value});
 
@@ -417,10 +490,7 @@ class _DetailRow extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(
-            color: AppTheme.mutedBlue,
-            fontSize: 12,
-          ),
+          style: const TextStyle(color: AppTheme.mutedBlue, fontSize: 12),
         ),
         const SizedBox(height: 4),
         Text(

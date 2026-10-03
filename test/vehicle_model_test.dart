@@ -33,4 +33,87 @@ void main() {
 
     expect(vehicle.isActive, isFalse);
   });
+
+  test('reads configured maximum range from known Firestore fields', () {
+    final vehicle = Vehicle.fromMap({
+      'registrationNumber': 'TN01AB1234',
+      'model': 'EV Smart X1',
+      'ownerName': 'Registered Vehicle Owner 1',
+      'vin': 'EVVIN001',
+      'isActive': true,
+      'maximumRangeKm': 420,
+      'estimatedRange': 210,
+    }, id: 'EV001');
+
+    expect(vehicle.maximumRangeKm, 420);
+  });
+
+  test('reads battery values stored on the registered Firestore vehicle', () {
+    final vehicle = Vehicle.fromMap({
+      'registrationNumber': 'TN01AB1234',
+      'model': 'EV Smart X1',
+      'ownerName': 'Registered Vehicle Owner 1',
+      'vin': 'EVVIN001',
+      'isActive': true,
+      'battery': '54',
+      'maximumRangeKm': 400,
+    }, id: 'EV001');
+
+    expect(vehicle.batteryPercentage, 54);
+    expect(vehicle.maximumRangeKm, 400);
+  });
+
+  test(
+    'skips malformed preferred values in favor of valid Firestore aliases',
+    () {
+      final vehicle = Vehicle.fromMap({
+        'registrationNumber': 'TN01AB1234',
+        'model': 'EV Smart X1',
+        'ownerName': 'Registered Vehicle Owner 1',
+        'vin': 'EVVIN001',
+        'isActive': true,
+        'batteryPercentage': 'unknown',
+        'battery': 54,
+        'maximumRangeKm': 'unknown',
+        'maxRangeKm': 400,
+      }, id: 'EV001');
+
+      expect(vehicle.batteryPercentage, 54);
+      expect(vehicle.maximumRangeKm, 400);
+    },
+  );
+
+  test('does not invent a maximum range when Firestore has no range field', () {
+    final vehicle = Vehicle.fromMap({
+      'registrationNumber': 'TN01AB1234',
+      'model': 'EV Smart X1',
+      'ownerName': 'Registered Vehicle Owner 1',
+      'vin': 'EVVIN001',
+      'isActive': true,
+    }, id: 'EV001');
+
+    expect(vehicle.maximumRangeKm, isNull);
+    expect(vehicle.batteryCapacityKwh, isNull);
+  });
+
+  test(
+    'serializes configured vehicle range using its Firestore field name',
+    () {
+      const vehicle = Vehicle(
+        model: 'EV Smart X1',
+        registrationNumber: 'TN01AB1234',
+        ownerName: 'Registered Vehicle Owner 1',
+        vin: 'EVVIN001',
+        estimatedRangeKm: 420,
+        batteryCapacityKwh: 72,
+        connectorType: 'CCS2',
+      );
+
+      final map = vehicle.toMap();
+      expect(map['maximumRangeKm'], 420);
+      expect(map['batteryCapacityKwh'], 72);
+      expect(map['connectorType'], 'CCS2');
+      expect(map.containsKey('estimatedRange'), isFalse);
+    },
+  );
 }
