@@ -75,28 +75,10 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
 
     setState(() => isLoading = true);
     User? newlyCreatedUser;
-    var profileCreated = false;
+    var profileProvisioningAttempted = false;
 
     try {
       final signup = widget.pendingSignup;
-      final vehicle = await firestoreService.verifyVehicleDetails(
-        registrationNumber: registration.text,
-        model: model.text,
-        ownerName: ownerName.text,
-        vin: vin.text,
-      );
-
-      if (vehicle == null) {
-        if (mounted) {
-          await showErrorDialog(
-            context,
-            'Vehicle details could not be verified. Please check all details and try again.',
-            title: 'Vehicle verification failed',
-          );
-        }
-        return;
-      }
-
       User? user = authService.currentUser;
       if (signup != null &&
           user?.email?.toLowerCase() != signup.email.toLowerCase()) {
@@ -128,6 +110,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
       }
 
       final existingProfile = await firestoreService.getUserProfile(user.uid);
+      late final Vehicle verifiedVehicle;
       if (existingProfile == null) {
         final profileName = signup?.name.trim().isNotEmpty == true
             ? signup!.name.trim()
@@ -139,27 +122,31 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
           );
         }
 
-        await firestoreService.createUserProfile(
+        profileProvisioningAttempted = true;
+        verifiedVehicle = await firestoreService.verifyAndCreateUserProfile(
           uid: user.uid,
           name: profileName,
           email: user.email ?? signup?.email ?? '',
           phone: signup?.mobile ?? '',
-          vehicle: vehicle,
+          registrationNumber: registration.text,
+          model: model.text,
+          ownerName: ownerName.text,
+          vin: vin.text,
         );
-        profileCreated = true;
-      } else if (existingProfile.vehicleId != vehicle.id) {
-        throw StateError(
-          'This account is already registered to another vehicle.',
+      } else {
+        final vehicle = await firestoreService.verifyConnectedVehicleDetails(
+          uid: user.uid,
+          registrationNumber: registration.text,
+          model: model.text,
+          ownerName: ownerName.text,
+          vin: vin.text,
         );
-      }
-
-      final registeredVehicle = await firestoreService.getVehicleById(
-        vehicle.id,
-      );
-      if (registeredVehicle == null) {
-        throw StateError(
-          'The verified vehicle is no longer active or could not be loaded.',
-        );
+        if (vehicle == null) {
+          throw StateError(
+            'These details do not match the vehicle connected to this account.',
+          );
+        }
+        verifiedVehicle = vehicle;
       }
 
       if (!mounted) return;
@@ -167,18 +154,21 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(
-          builder: (_) => BluetoothScanningPage(vehicle: registeredVehicle),
+          builder: (_) => BluetoothScanningPage(vehicle: verifiedVehicle),
         ),
         (route) => false,
       );
     } catch (error, stackTrace) {
       debugPrint('Vehicle registration failed: $error\n$stackTrace');
 
-      if (newlyCreatedUser != null && !profileCreated) {
+      if (newlyCreatedUser != null && !profileProvisioningAttempted) {
         try {
           await newlyCreatedUser.delete();
-        } catch (_) {
-          // Keep the original registration error visible if rollback is blocked.
+        } catch (rollbackError, rollbackStackTrace) {
+          debugPrint(
+            'Could not remove the unprovisioned Firebase account: '
+            '$rollbackError\n$rollbackStackTrace',
+          );
         }
       }
 

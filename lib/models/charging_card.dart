@@ -3,35 +3,67 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class ChargingCard {
   const ChargingCard({
     required this.id,
+    this.cardNumber,
     this.maskedCardNumber,
     this.cardType,
+    this.cardHolderName,
+    this.cardLastFour,
     this.balance,
+    this.currency,
     this.status,
-    this.linkedVehicleId,
+    this.vehicleId,
     this.expiryDate,
+    this.registeredAt,
     this.lastRechargeAmount,
     this.lastRechargeDate,
   });
 
   final String id;
+  final String? cardNumber;
   final String? maskedCardNumber;
   final String? cardType;
+  final String? cardHolderName;
+  final String? cardLastFour;
   final double? balance;
+  final String? currency;
   final String? status;
-  final String? linkedVehicleId;
+  final String? vehicleId;
   final DateTime? expiryDate;
+  final DateTime? registeredAt;
   final double? lastRechargeAmount;
   final DateTime? lastRechargeDate;
+
+  String? get displayCardNumber {
+    final masked = maskedCardNumber;
+    if (masked != null) return masked;
+    final number = cardNumber;
+    final lastFour = cardLastFour;
+    if (number == null) {
+      return lastFour == null ? null : 'XXXX XXXX XXXX $lastFour';
+    }
+    final compact = number.replaceAll(RegExp(r'[\s-]'), '');
+    final visibleSuffix = compact.length <= 4
+        ? compact
+        : compact.substring(compact.length - 4);
+    return 'XXXX XXXX XXXX $visibleSuffix';
+  }
+
+  String? get linkedVehicleId => vehicleId;
 
   factory ChargingCard.fromMap(Map<String, dynamic> map, {required String id}) {
     return ChargingCard(
       id: id,
+      cardNumber: _string(map['cardNumber']),
       maskedCardNumber: _string(map['maskedCardNumber']),
       cardType: _string(map['cardType']),
+      cardHolderName: _string(map['cardHolderName']),
+      cardLastFour: _string(map['cardLastFour']),
       balance: _number(map['balance']),
+      currency: _string(map['currency']),
       status: _string(map['status']),
-      linkedVehicleId: _string(map['linkedVehicleId']),
+      vehicleId: _string(map['vehicleId'] ?? map['linkedVehicleId']),
       expiryDate: _date(map['expiryDate']),
+      registeredAt: _date(map['registeredAt'] ?? map['createdAt']),
       lastRechargeAmount: _number(map['lastRechargeAmount']),
       lastRechargeDate: _date(map['lastRechargeDate']),
     );
@@ -63,20 +95,36 @@ class ChargingTransaction {
   const ChargingTransaction({
     required this.id,
     this.amount,
+    this.balanceBefore,
+    this.balanceAfter,
     this.type,
+    this.stationId,
     this.stationName,
+    this.operator,
+    this.vehicleId,
     this.date,
     this.status,
-    this.vehicleId,
+    this.description,
+    this.currency,
+    this.cardId,
+    this.sessionReferenceId,
   });
 
   final String id;
   final double? amount;
+  final double? balanceBefore;
+  final double? balanceAfter;
   final String? type;
+  final String? stationId;
   final String? stationName;
+  final String? operator;
+  final String? vehicleId;
   final DateTime? date;
   final String? status;
-  final String? vehicleId;
+  final String? description;
+  final String? currency;
+  final String? cardId;
+  final String? sessionReferenceId;
 
   factory ChargingTransaction.fromMap(
     Map<String, dynamic> map, {
@@ -85,11 +133,28 @@ class ChargingTransaction {
     return ChargingTransaction(
       id: id,
       amount: ChargingCard._number(map['amount']),
+      balanceBefore: ChargingCard._number(map['balanceBefore']),
+      balanceAfter: ChargingCard._number(map['balanceAfter']),
       type: ChargingCard._string(map['type']),
+      stationId: ChargingCard._string(map['stationId']),
       stationName: ChargingCard._string(map['stationName']),
-      date: ChargingCard._date(map['date']),
-      status: ChargingCard._string(map['status']),
+      operator: ChargingCard._string(map['operator']),
       vehicleId: ChargingCard._string(map['vehicleId']),
+      date: ChargingCard._date(map['timestamp'] ?? map['date']),
+      status: ChargingCard._string(map['status']),
+      description: ChargingCard._string(map['description']),
+      currency: ChargingCard._string(map['currency']),
+      cardId: ChargingCard._string(map['cardId']),
+      sessionReferenceId: ChargingCard._string(
+        map['sessionReferenceId'] ?? map['chargingSessionId'],
+      ),
     );
   }
+}
+
+class InsufficientChargingCardBalanceException implements Exception {
+  const InsufficientChargingCardBalanceException();
+
+  @override
+  String toString() => 'Insufficient charging card balance.';
 }
