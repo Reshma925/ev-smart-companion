@@ -12,7 +12,9 @@ import '../services/weather_service.dart';
 import '../widgets/weather_card.dart';
 import 'charging_station_page.dart';
 import 'maintenance.dart';
+import 'learn_screen.dart';
 import 'profile_page.dart';
+import '../services/learning_assistant_service.dart';
 import 'trip_planner.dart';
 import 'vehicle_health_page.dart';
 import 'vehicle_details_page.dart';
@@ -164,6 +166,24 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => navIndex = 0);
       _loadDistanceUnitPreference();
     }
+  }
+
+  Future<void> openLearn() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    setState(() => navIndex = 2);
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LearnScreen(
+          vehicleStream: firestoreService.watchConnectedVehicle(uid),
+          telemetryStreamFor: firestoreService.watchVehicleTelemetry,
+          assistant: FirebaseLearningAssistantService(),
+          distanceUnit: _distanceUnit,
+        ),
+      ),
+    );
+    if (mounted) setState(() => navIndex = 0);
   }
 
   @override
@@ -330,6 +350,7 @@ class _HomeScreenState extends State<HomeScreen> {
           } else {
             setState(() => navIndex = index);
             if (index == 1) openChargingMap();
+            if (index == 2) openLearn();
           }
         },
         type: BottomNavigationBarType.fixed,

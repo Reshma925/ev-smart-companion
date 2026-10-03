@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 import '../app_theme.dart';
@@ -45,6 +46,8 @@ class ChargingCardSection extends StatelessWidget {
           stream: firestoreService.watchChargingCard(
             uid,
             vehicleId: vehicle.id,
+            vehicleModel: vehicle.model,
+            vehicleRegistration: vehicle.registrationNumber,
           ),
           builder: (context, cardSnapshot) {
             if (cardSnapshot.hasError) {
@@ -69,6 +72,27 @@ class ChargingCardSection extends StatelessWidget {
     Vehicle vehicle,
     ChargingCard? card,
   ) {
+    if (card != null &&
+        (card.vehicleId != vehicle.id ||
+            card.vehicleModel != vehicle.model ||
+            card.vehicleRegistrationNumber != vehicle.registrationNumber ||
+            card.vehicleVin != vehicle.vin)) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _CardMessage(
+            icon: Icons.warning_amber_rounded,
+            message: 'Charging card does not match the selected vehicle.',
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () => _openCardForm(context, vehicle, card: card),
+            icon: const Icon(Icons.edit_outlined),
+            label: const Text('Review card details'),
+          ),
+        ],
+      );
+    }
     final registerButton = FilledButton.icon(
       onPressed: () => _openCardForm(context, vehicle),
       icon: const Icon(Icons.add_card_rounded),
@@ -88,10 +112,10 @@ class ChargingCardSection extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          _CardValue(
-            label: 'Connected vehicle',
-            value:
-                '${vehicle.model}\n${vehicle.registrationNumber}\n${vehicle.id}',
+          _ConnectedVehicleSelector(
+            uid: uid,
+            vehicle: vehicle,
+            firestoreService: firestoreService,
           ),
           const SizedBox(height: 12),
           if (card == null) ...[
@@ -150,8 +174,9 @@ class ChargingCardSection extends StatelessWidget {
             _CardValue(
               label: 'Vehicle',
               value:
-                  '${vehicle.model}\n${vehicle.registrationNumber}\n${vehicle.id}',
+                  '${card.vehicleModel}\n${card.vehicleRegistrationNumber}\n${card.vehicleId}',
             ),
+            _CardValue(label: 'VIN', value: card.vehicleVin ?? 'Not available'),
             _CardValue(
               label: 'Currency',
               value: card.currency ?? 'Not available',
@@ -219,7 +244,7 @@ class ChargingCardSection extends StatelessWidget {
     Vehicle vehicle, {
     ChargingCard? card,
   }) async {
-    await showModalBottomSheet<bool>(
+    final savedVehicleId = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -237,6 +262,15 @@ class ChargingCardSection extends StatelessWidget {
         ),
       ),
     );
+    if (savedVehicleId != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Charging card details saved in Firebase for vehicle $savedVehicleId.',
+          ),
+        ),
+      );
+    }
   }
 
   void _showRechargeMessage(BuildContext context) {
@@ -274,6 +308,113 @@ class ChargingCardSection extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ConnectedVehicleSelector extends StatefulWidget {
+  const _ConnectedVehicleSelector({
+    required this.uid,
+    required this.vehicle,
+    required this.firestoreService,
+  });
+
+  final String uid;
+  final Vehicle vehicle;
+  final FirestoreService firestoreService;
+
+  @override
+  State<_ConnectedVehicleSelector> createState() =>
+      _ConnectedVehicleSelectorState();
+}
+
+class _ConnectedVehicleSelectorState extends State<_ConnectedVehicleSelector> {
+  late final Stream<List<Vehicle>> _vehicles;
+  bool _switching = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _vehicles = widget.firestoreService.watchLinkedVehicles(widget.uid);
+  }
+
+  Future<void> _selectVehicle(String vehicleId) async {
+    if (_switching || vehicleId == widget.vehicle.id) return;
+    setState(() {
+      _switching = true;
+      _error = null;
+    });
+    try {
+      await widget.firestoreService.setConnectedVehicle(
+        uid: widget.uid,
+        vehicleId: vehicleId,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Could not switch connected vehicle: $error\n$stackTrace');
+      if (mounted) {
+        setState(() {
+          _error = error is FirebaseFunctionsException
+              ? error.message ?? error.code
+              : error.toString();
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _switching = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<List<Vehicle>>(
+    stream: _vehicles,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return _CardValue(
+          label: 'Connected vehicle',
+          value:
+              '${widget.vehicle.model}\n${widget.vehicle.registrationNumber}\n${widget.vehicle.id}',
+        );
+      }
+      final vehicles = {
+        for (final linkedVehicle in snapshot.data ?? <Vehicle>[])
+          linkedVehicle.id: linkedVehicle,
+        widget.vehicle.id: widget.vehicle,
+      }.values.toList();
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DropdownButtonFormField<String>(
+            key: ValueKey(widget.vehicle.id),
+            initialValue: widget.vehicle.id,
+            decoration: const InputDecoration(
+              labelText: 'Connected vehicle',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              for (final linkedVehicle in vehicles)
+                DropdownMenuItem(
+                  value: linkedVehicle.id,
+                  child: Text(
+                    '${linkedVehicle.model}\n${linkedVehicle.registrationNumber} · ${linkedVehicle.id}',
+                  ),
+                ),
+            ],
+            onChanged: _switching
+                ? null
+                : (vehicleId) {
+                    if (vehicleId != null) _selectVehicle(vehicleId);
+                  },
+          ),
+          if (_switching) ...[
+            const SizedBox(height: 8),
+            const LinearProgressIndicator(),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+          ],
+        ],
+      );
+    },
+  );
 }
 
 class _LegacyCardMigration extends StatefulWidget {
@@ -437,6 +578,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
   late final TextEditingController _typeController;
   late final TextEditingController _numberController;
   late final TextEditingController _holderController;
+  late final Stream<List<Vehicle>> _linkedVehiclesStream;
   String? _selectedVehicleId;
   DateTime? _expiryDate;
   bool _saving = false;
@@ -451,6 +593,9 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
     _holderController = TextEditingController(text: card?.cardHolderName ?? '');
     _expiryDate = card?.expiryDate;
     _selectedVehicleId = widget.connectedVehicle.id;
+    _linkedVehiclesStream = widget.firestoreService.watchLinkedVehicles(
+      widget.uid,
+    );
   }
 
   @override
@@ -462,12 +607,44 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
   }
 
   Future<void> _save() async {
-    if (_saving || !_formKey.currentState!.validate()) return;
+    debugPrint('[CARD PROD DEBUG] REGISTER BUTTON PRESSED');
+    if (_saving) {
+      debugPrint('[CARD PROD DEBUG] Validation: already saving (blocked)');
+      return;
+    }
+    final isEditing = widget.existingCard != null;
+    final cardTypeValid = _typeController.text.trim().isNotEmpty;
+    final cardNumber = _numberController.text.trim();
+    final cardNumberValid =
+        (isEditing && cardNumber.isEmpty) ||
+        RegExp(
+          r'^[A-Za-z0-9]{4,32}$',
+        ).hasMatch(cardNumber.replaceAll(RegExp(r'[\s-]'), ''));
+    final cardHolderValid = _holderController.text.trim().isNotEmpty;
+    debugPrint('[CARD PROD DEBUG] Validation: card type valid = $cardTypeValid');
+    debugPrint(
+      '[CARD PROD DEBUG] Validation: card number valid = $cardNumberValid',
+    );
+    debugPrint(
+      '[CARD PROD DEBUG] Validation: card holder valid = $cardHolderValid',
+    );
+    final formValid = _formKey.currentState!.validate();
+    debugPrint('[CARD PROD DEBUG] Validation: form valid = $formValid');
+    if (!formValid) return;
+
     final vehicleId = _selectedVehicleId ?? widget.connectedVehicle.id;
+    debugPrint(
+      '[CARD PROD DEBUG] Validation: selected vehicle ID non-empty = '
+      '${vehicleId.isNotEmpty}',
+    );
     if (vehicleId.isEmpty) {
       setState(() => _error = 'Link a vehicle to your account first.');
       return;
     }
+    debugPrint(
+      '[CARD PROD DEBUG] Validation: expiry date selected = '
+      '${_expiryDate != null}',
+    );
     if (_expiryDate == null) {
       setState(() => _error = 'Choose the card expiry date.');
       return;
@@ -479,6 +656,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
     });
     try {
       if (widget.existingCard == null) {
+        debugPrint('[CARD PROD DEBUG] Calling registerChargingCard()');
         await widget.firestoreService.registerChargingCard(
           uid: widget.uid,
           cardType: _typeController.text,
@@ -497,15 +675,31 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
           expiryDate: _expiryDate,
         );
       }
-      if (mounted) Navigator.pop(context, true);
+      if (vehicleId != widget.connectedVehicle.id) {
+        await widget.firestoreService.setConnectedVehicle(
+          uid: widget.uid,
+          vehicleId: vehicleId,
+        );
+      }
+      if (mounted) Navigator.pop(context, vehicleId);
     } catch (error, stackTrace) {
       debugPrint('Could not save charging-card details: $error\n$stackTrace');
       if (!mounted) return;
       setState(() {
         _saving = false;
-        _error = error is StateError || error is ArgumentError
-            ? error.toString().replaceFirst('Bad state: ', '')
-            : 'Charging-card details could not be saved. Check your connection and try again.';
+        _error = switch (error) {
+          StateError stateError => stateError.toString().replaceFirst(
+            'Bad state: ',
+            '',
+          ),
+          ArgumentError argumentError => argumentError.toString().replaceFirst(
+            'Invalid argument(s): ',
+            '',
+          ),
+          FirebaseException firebaseError =>
+            'Firebase ${firebaseError.code}: ${firebaseError.message ?? 'Charging-card details could not be saved.'}',
+          _ => 'Charging-card details could not be saved. $error',
+        };
       });
     }
   }
@@ -616,24 +810,49 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
               ),
             ),
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _selectedVehicleId ?? vehicle.id,
-              decoration: const InputDecoration(
-                labelText: 'Vehicle association',
-              ),
-              items: [
-                DropdownMenuItem(
-                  value: vehicle.id,
-                  child: Text(
-                    '${vehicle.model} · ${vehicle.registrationNumber} · ${vehicle.id}',
+            StreamBuilder<List<Vehicle>>(
+              stream: _linkedVehiclesStream,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return const Text(
+                    'Linked vehicles could not be loaded. Check your connection and try again.',
+                    style: TextStyle(color: Colors.redAccent),
+                  );
+                }
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
+                  return const LinearProgressIndicator();
+                }
+                final linkedVehicles = {
+                  for (final linkedVehicle in snapshot.data ?? <Vehicle>[])
+                    linkedVehicle.id: linkedVehicle,
+                  vehicle.id: vehicle,
+                }.values.toList();
+                final selectedVehicleId =
+                    linkedVehicles.any((item) => item.id == _selectedVehicleId)
+                    ? _selectedVehicleId!
+                    : vehicle.id;
+                return DropdownButtonFormField<String>(
+                  initialValue: selectedVehicleId,
+                  decoration: const InputDecoration(
+                    labelText: 'Vehicle association',
                   ),
-                ),
-              ],
-              onChanged: _saving
-                  ? null
-                  : (value) => setState(() {
-                      _selectedVehicleId = value;
-                    }),
+                  items: [
+                    for (final linkedVehicle in linkedVehicles)
+                      DropdownMenuItem(
+                        value: linkedVehicle.id,
+                        child: Text(
+                          '${linkedVehicle.model} · ${linkedVehicle.registrationNumber} · ${linkedVehicle.id}',
+                        ),
+                      ),
+                  ],
+                  onChanged: _saving || isEditing
+                      ? null
+                      : (value) => setState(() {
+                          _selectedVehicleId = value;
+                        }),
+                );
+              },
             ),
             if (!isEditing) ...[
               const SizedBox(height: 10),

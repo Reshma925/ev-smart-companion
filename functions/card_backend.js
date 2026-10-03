@@ -93,9 +93,19 @@ function vehicleClaimRef(db, vehicleId) {
 }
 
 function cardRef(db, uid, vehicleId) {
-  return membershipRef(db, uid, vehicleId)
+  return db.collection("users").doc(uid)
+    .collection("vehicles").doc(vehicleId)
     .collection("chargingCard")
     .doc(CARD_ID);
+}
+
+function legacyCardRefs(db, uid, vehicleId) {
+  const user = db.collection("users").doc(uid);
+  return [
+    user.collection("chargingCard").doc(CARD_ID),
+    db.collection("vehicles").doc(vehicleId)
+      .collection("chargingCard").doc(CARD_ID),
+  ];
 }
 
 function lastFourFromCard(data) {
@@ -279,11 +289,11 @@ async function getLegacyChargingCardSummary({ db, uid, vehicleId }) {
   const normalizedVehicleId = vehicleId.trim();
   const userDoc = db.collection("users").doc(uid);
   const vehicleDoc = db.collection("vehicles").doc(normalizedVehicleId);
-  const legacyCardDoc = userDoc.collection("chargingCard").doc(CARD_ID);
-  const [userSnapshot, vehicleSnapshot, legacySnapshot] = await Promise.all([
+  const legacyCards = legacyCardRefs(db, uid, normalizedVehicleId);
+  const [userSnapshot, vehicleSnapshot, ...legacySnapshots] = await Promise.all([
     userDoc.get(),
     vehicleDoc.get(),
-    legacyCardDoc.get(),
+    ...legacyCards.map((reference) => reference.get()),
   ]);
   if (
     !userSnapshot.exists ||
@@ -294,9 +304,15 @@ async function getLegacyChargingCardSummary({ db, uid, vehicleId }) {
   if (!vehicleSnapshot.exists || vehicleSnapshot.data().isActive !== true) {
     throw new Error("The connected vehicle is unavailable or inactive.");
   }
-  if (!legacySnapshot.exists) return null;
+  const existingLegacyCards = legacySnapshots.filter((snapshot) => snapshot.exists);
+  if (existingLegacyCards.length > 1) {
+    throw new Error(
+      "Multiple legacy charging cards exist. They need manual review before migration.",
+    );
+  }
+  if (existingLegacyCards.length === 0) return null;
 
-  const legacyCard = legacySnapshot.data();
+  const legacyCard = existingLegacyCards[0].data();
   const lastFour = lastFourFromCard(legacyCard);
   const rawExpiryDate = legacyCard.expiryDate;
   const expiryDate =
@@ -339,8 +355,7 @@ async function migrateLegacyChargingCard({ db, Timestamp, uid, vehicleId }) {
   const vehicleDoc = db.collection("vehicles").doc(normalizedVehicleId);
   const memberDoc = membershipRef(db, uid, normalizedVehicleId);
   const claimDoc = vehicleClaimRef(db, normalizedVehicleId);
-  const legacyCardDoc = userDoc.collection("chargingCard").doc(CARD_ID);
-  const legacyTransactions = legacyCardDoc.collection("transactions");
+  const legacyCards = legacyCardRefs(db, uid, normalizedVehicleId);
   const destinationCard = cardRef(db, uid, normalizedVehicleId);
 
   const result = await db.runTransaction(async (transaction) => {
@@ -348,10 +363,9 @@ async function migrateLegacyChargingCard({ db, Timestamp, uid, vehicleId }) {
     const vehicleSnapshot = await transaction.get(vehicleDoc);
     const memberSnapshot = await transaction.get(memberDoc);
     const claimSnapshot = await transaction.get(claimDoc);
-    const legacySnapshot = await transaction.get(legacyCardDoc);
     const destinationSnapshot = await transaction.get(destinationCard);
-    const oldTransactions = await transaction.get(
-      legacyTransactions.limit(MIGRATION_TRANSACTION_LIMIT + 1),
+    const legacySnapshots = await Promise.all(
+      legacyCards.map((reference) => transaction.get(reference)),
     );
 
     if (!userSnapshot.exists || userSnapshot.data().vehicleId !== normalizedVehicleId) {
@@ -360,7 +374,24 @@ async function migrateLegacyChargingCard({ db, Timestamp, uid, vehicleId }) {
     if (!vehicleSnapshot.exists || vehicleSnapshot.data().isActive !== true) {
       throw new Error("The connected vehicle is unavailable or inactive.");
     }
-    if (!legacySnapshot.exists) throw new Error("No legacy charging card exists.");
+    const legacyIndexes = legacySnapshots
+      .map((snapshot, index) => (snapshot.exists ? index : -1))
+      .filter((index) => index >= 0);
+    if (legacyIndexes.length === 0) {
+      throw new Error("No legacy charging card exists.");
+    }
+    if (legacyIndexes.length > 1) {
+      throw new Error(
+        "Multiple legacy charging cards exist. They need manual review before migration.",
+      );
+    }
+    const legacyIndex = legacyIndexes[0];
+    const legacyCardDoc = legacyCards[legacyIndex];
+    const legacySnapshot = legacySnapshots[legacyIndex];
+    const oldTransactions = await transaction.get(
+      legacyCardDoc.collection("transactions")
+        .limit(MIGRATION_TRANSACTION_LIMIT + 1),
+    );
     if (claimSnapshot.exists && claimSnapshot.data().uid !== uid) {
       throw new Error("This vehicle is already linked to another account.");
     }
@@ -433,6 +464,10 @@ async function migrateLegacyChargingCard({ db, Timestamp, uid, vehicleId }) {
       maskedCardNumber: `XXXX XXXX XXXX ${lastFour}`,
       cardHolderName,
       vehicleId: normalizedVehicleId,
+      vehicleModel: vehicleSnapshot.data().model ?? "",
+      vehicleRegistrationNumber:
+        vehicleSnapshot.data().registrationNumber ?? "",
+      vehicleVin: vehicleSnapshot.data().vin ?? "",
       ...(asTimestamp(oldCard.expiryDate, Timestamp)
         ? { expiryDate: asTimestamp(oldCard.expiryDate, Timestamp) }
         : {}),
@@ -489,13 +524,204 @@ async function migrateLegacyChargingCard({ db, Timestamp, uid, vehicleId }) {
   return result;
 }
 
+async function debitConfirmedChargingSession({ db, Timestamp, uid, sessionId }) {
+  if (
+    typeof sessionId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)
+  ) {
+    throw new Error("A valid charging-session reference is required.");
+  }
+
+  const sessionRef = db.collection("chargingSessions").doc(sessionId);
+  return db.runTransaction(async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    if (!sessionSnapshot.exists) {
+      throw new Error("No trusted charging-session confirmation was found.");
+    }
+    const session = sessionSnapshot.data();
+    if (session.uid !== uid) {
+      throw new Error("This charging session does not belong to your account.");
+    }
+
+    const vehicleId =
+      typeof session.vehicleId === "string" ? session.vehicleId.trim() : "";
+    if (!vehicleId) {
+      throw new Error("The confirmed charging session has no vehicle.");
+    }
+    const userRef = db.collection("users").doc(uid);
+    const membership = membershipRef(db, uid, vehicleId);
+    const claimRef = vehicleClaimRef(db, vehicleId);
+    const vehicleRef = db.collection("vehicles").doc(vehicleId);
+    const card = cardRef(db, uid, vehicleId);
+    const transactionRef = card.collection("transactions").doc(sessionId);
+
+    const [
+      userSnapshot,
+      membershipSnapshot,
+      claimSnapshot,
+      vehicleSnapshot,
+      cardSnapshot,
+      transactionSnapshot,
+    ] = await Promise.all([
+      transaction.get(userRef),
+      transaction.get(membership),
+      transaction.get(claimRef),
+      transaction.get(vehicleRef),
+      transaction.get(card),
+      transaction.get(transactionRef),
+    ]);
+
+    if (
+      !userSnapshot.exists ||
+      userSnapshot.data().uid !== uid ||
+      (userSnapshot.data().vehicleId !== vehicleId && !membershipSnapshot.exists)
+    ) {
+      throw new Error("This vehicle is not linked to your account.");
+    }
+    if (claimSnapshot.exists && claimSnapshot.data().uid !== uid) {
+      throw new Error("This vehicle is linked to another account.");
+    }
+    if (!vehicleSnapshot.exists || vehicleSnapshot.data().isActive !== true) {
+      throw new Error("The session vehicle is unavailable or inactive.");
+    }
+    if (session.debitStatus === "completed") {
+      if (!transactionSnapshot.exists) {
+        throw new Error("The completed session has no charging transaction.");
+      }
+      return {
+        alreadyDebited: true,
+        transactionId: transactionRef.id,
+        vehicleId,
+        balanceAfter: transactionSnapshot.data().balanceAfter,
+      };
+    }
+    if (session.status !== "confirmed" || session.debitStatus !== "pending") {
+      throw new Error("The charging session is not trusted and confirmed.");
+    }
+    if (transactionSnapshot.exists) {
+      throw new Error("A transaction already exists for this charging session.");
+    }
+    if (!cardSnapshot.exists) {
+      throw new Error("No charging card is registered for this vehicle.");
+    }
+
+    const amount = session.amount;
+    const currentBalance = cardSnapshot.data().balance;
+    if (
+      typeof amount !== "number" ||
+      !Number.isFinite(amount) ||
+      amount <= 0 ||
+      typeof currentBalance !== "number" ||
+      !Number.isFinite(currentBalance) ||
+      currentBalance < 0
+    ) {
+      throw new Error("The session amount or charging-card balance is invalid.");
+    }
+    const amountMinor = Math.round(amount * 100);
+    const balanceBeforeMinor = Math.round(currentBalance * 100);
+    if (Math.abs(amount * 100 - amountMinor) > 1e-7) {
+      throw new Error("Charging amounts must use no more than two decimals.");
+    }
+    if (balanceBeforeMinor < amountMinor) {
+      throw new Error("Insufficient charging card balance.");
+    }
+    const balanceAfterMinor = balanceBeforeMinor - amountMinor;
+    const balanceBefore = balanceBeforeMinor / 100;
+    const balanceAfter = balanceAfterMinor / 100;
+    const currency =
+      typeof session.currency === "string"
+        ? session.currency.trim().toUpperCase()
+        : cardSnapshot.data().currency;
+    if (typeof currency !== "string" || !/^[A-Z]{3}$/.test(currency)) {
+      throw new Error("The confirmed charging session has an invalid currency.");
+    }
+    const timestamp = session.confirmedAt ?? Timestamp.now();
+
+    transaction.update(card, {
+      balance: balanceAfter,
+      updatedAt: Timestamp.now(),
+    });
+    transaction.create(transactionRef, {
+      transactionId: transactionRef.id,
+      cardId: CARD_ID,
+      vehicleId,
+      type: "debit",
+      amount: amountMinor / 100,
+      currency,
+      balanceBefore,
+      balanceAfter,
+      stationId: typeof session.stationId === "string" ? session.stationId : "",
+      stationName:
+        typeof session.stationName === "string" ? session.stationName : "",
+      operator: typeof session.operator === "string" ? session.operator : "",
+      sessionReferenceId: sessionId,
+      timestamp,
+      status: "completed",
+      description: "Confirmed charging session",
+    });
+    transaction.update(sessionRef, {
+      debitStatus: "completed",
+      debitTransactionId: transactionRef.id,
+      balanceBefore,
+      balanceAfter,
+      debitedAt: Timestamp.now(),
+    });
+
+    return {
+      alreadyDebited: false,
+      transactionId: transactionRef.id,
+      vehicleId,
+      balanceBefore,
+      balanceAfter,
+    };
+  });
+}
+
+async function syncVehicleCardSnapshots({ db, vehicleId, vehicleData }) {
+  if (typeof vehicleId !== "string" || vehicleId.trim().length === 0) {
+    throw new Error("A valid vehicle ID is required.");
+  }
+  const normalizedVehicleId = vehicleId.trim();
+  const [primaryOwners, linkedMemberships] = await Promise.all([
+    db.collection("users").where("vehicleId", "==", normalizedVehicleId).get(),
+    db.collectionGroup("vehicles")
+      .where("vehicleId", "==", normalizedVehicleId)
+      .get(),
+  ]);
+  const ownerIds = new Set(primaryOwners.docs.map((document) => document.id));
+  for (const membership of linkedMemberships.docs) {
+    const userDocument = membership.ref.parent.parent;
+    if (
+      membership.ref.parent.id === "vehicles" &&
+      userDocument?.parent.id === "users"
+    ) {
+      ownerIds.add(userDocument.id);
+    }
+  }
+  let updatedCards = 0;
+  await Promise.all([...ownerIds].map(async (uid) => {
+    const card = cardRef(db, uid, normalizedVehicleId);
+    const snapshot = await card.get();
+    if (!snapshot.exists) return;
+    await card.update({
+      vehicleModel: vehicleData.model ?? "",
+      vehicleRegistrationNumber: vehicleData.registrationNumber ?? "",
+      vehicleVin: vehicleData.vin ?? "",
+    });
+    updatedCards += 1;
+  }));
+  return updatedCards;
+}
+
 module.exports = {
   CARD_ID,
   MIGRATION_TRANSACTION_LIMIT,
+  debitConfirmedChargingSession,
   findVerifiedVehicle,
   getLegacyChargingCardSummary,
   linkVerifiedVehicle,
   migrateLegacyChargingCard,
   setConnectedVehicle,
+  syncVehicleCardSnapshots,
   verifyAndCreateUserProfile,
 };

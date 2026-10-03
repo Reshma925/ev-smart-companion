@@ -303,4 +303,63 @@ void main() {
     expect(stations.single.distanceFromRouteKm, closeTo(1.1, 0.2));
     expect(stations.single.distanceKm, greaterThan(40));
   });
+
+  test('searches the entire long route, including beyond origin radius', () async {
+    late String query;
+    final client = MockClient((request) async {
+      query = request.bodyFields['data']!;
+      return http.Response(
+        jsonEncode({
+          'elements': [
+            {
+              'type': 'node',
+              'id': 81,
+              'lat': 0,
+              'lon': 1.9,
+              'tags': {
+                'amenity': 'charging_station',
+                'name': 'Far route station',
+              },
+            },
+            {
+              'type': 'node',
+              'id': 82,
+              'lat': 0.2,
+              'lon': 1,
+              'tags': {
+                'amenity': 'charging_station',
+                'name': 'Outside corridor',
+              },
+            },
+          ],
+        }),
+        200,
+      );
+    });
+    final service = ChargingStationService(client: client);
+    addTearDown(service.close);
+
+    final stations = await service.findAlongEntireRoute(
+      origin: const LatLng(0, 0),
+      routePoints: const [LatLng(0, 0), LatLng(0, 2)],
+      corridorWidthKm: 5,
+    );
+
+    expect(query, contains('around:7500'));
+    expect(query, contains(',0.0,2.0'));
+    expect(stations.map((station) => station.name), ['Far route station']);
+    expect(stations.single.distanceKm, greaterThan(200));
+    expect(stations.single.distanceFromRouteKm, closeTo(0, 0.01));
+  });
+
+  test('calculates station diversion from a route', () {
+    expect(
+      ChargingStationService.distanceToRouteKm(
+        const LatLng(0.01, 1),
+        const [LatLng(0, 0), LatLng(0, 2)],
+      ),
+      closeTo(1.1, 0.1),
+    );
+  });
+
 }

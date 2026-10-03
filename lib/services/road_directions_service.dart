@@ -16,6 +16,113 @@ class RoadDirectionsService {
   final Map<String, GeocodedDestination> _destinationCache = {};
   final Map<String, RoadRoute> _routeCache = {};
 
+  Future<List<GeocodedDestination>> searchPlaces(
+    String query, {
+    LatLng? proximity,
+    int limit = 6,
+  }) async {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.length < 3) return const [];
+    if (limit < 1 || limit > 10) {
+      throw ArgumentError.value(limit, 'limit', 'Must be between 1 and 10.');
+    }
+    final parameters = <String, String>{
+      'q': normalizedQuery,
+      'limit': '$limit',
+      'lang': 'en',
+    };
+    if (proximity != null) {
+      parameters['lat'] = '${proximity.latitude}';
+      parameters['lon'] = '${proximity.longitude}';
+    }
+    final uri = Uri.https('photon.komoot.io', '/api', parameters);
+    final response = await _request(
+      uri,
+      headers: const {'Accept': 'application/json'},
+    );
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic> || decoded['features'] is! List) {
+      throw const FormatException('Place search returned an invalid response.');
+    }
+    final places = <GeocodedDestination>[];
+    for (final feature in decoded['features'] as List) {
+      if (feature is! Map) continue;
+      final geometry = feature['geometry'];
+      final coordinates = geometry is Map ? geometry['coordinates'] : null;
+      final properties = feature['properties'];
+      if (coordinates is! List ||
+          coordinates.length < 2 ||
+          properties is! Map) {
+        continue;
+      }
+      final longitude = _asDouble(coordinates[0]);
+      final latitude = _asDouble(coordinates[1]);
+      if (latitude == null ||
+          longitude == null ||
+          !latitude.isFinite ||
+          !longitude.isFinite ||
+          latitude < -90 ||
+          latitude > 90 ||
+          longitude < -180 ||
+          longitude > 180) {
+        continue;
+      }
+      final values = Map<String, dynamic>.from(properties);
+      final components = <String, String>{};
+      for (final key in const [
+        'name',
+        'housenumber',
+        'street',
+        'postcode',
+        'district',
+        'city',
+        'county',
+        'state',
+        'country',
+      ]) {
+        final value = values[key]?.toString().trim();
+        if (value != null && value.isNotEmpty) components[key] = value;
+      }
+      final name =       components['name'] ??
+      components['street'] ??
+      components['city'] ??
+      components['district'] ??
+      components['county'] ??
+      components['state'];
+      if (name == null) continue;
+      final displayName = _joinPlaceParts([
+        components['name'],
+        if (components['housenumber'] != null ||
+            components['street'] != null)
+          [
+            components['housenumber'],
+            components['street'],
+          ].whereType<String>().join(' '),
+        components['postcode'],
+        components['city'],
+        components['district'],
+        components['county'],
+        components['state'],
+        components['country'],
+      ]);
+      final osmType = values['osm_type']?.toString().trim();
+      final osmId = values['osm_id']?.toString().trim();
+      places.add(
+        GeocodedDestination(
+          name: name,
+          address: displayName,
+          displayName: name,
+          location: LatLng(latitude, longitude),
+          placeId: osmType != null && osmType.isNotEmpty && osmId != null
+              ? '$osmType/$osmId'
+              : null,
+          addressComponents: Map.unmodifiable(components),
+        ),
+      );
+    }
+    return List.unmodifiable(places);
+  }
+
   Future<GeocodedDestination> geocode(String query) async {
     final normalizedQuery = query.trim();
     if (normalizedQuery.isEmpty) {
@@ -56,7 +163,18 @@ class RoadDirectionsService {
           ? result['name'].toString().trim()
           : normalizedQuery,
       address: displayName,
+      displayName: displayName,
       location: LatLng(latitude, longitude),
+      placeId: result['place_id']?.toString(),
+      addressComponents: result['address'] is Map
+          ? Map.unmodifiable(
+              Map<String, dynamic>.from(
+                result['address'] as Map,
+              ).map(
+                (key, value) => MapEntry(key, value.toString()),
+              ),
+            )
+          : const {},
     );
     _destinationCache[normalizedQuery.toLowerCase()] = destination;
     return destination;
@@ -150,8 +268,13 @@ class RoadDirectionsService {
     }
     if (response.statusCode != 200) {
       debugPrint(
-        'OpenStreetMap route endpoint returned HTTP ${response.statusCode}.',
+        'OpenStreetMap/geographic endpoint returned HTTP ${response.statusCode}.',
       );
+      if (response.statusCode == 429) {
+        throw const RoadDirectionsException(
+          'Place search is temporarily rate limited. Wait a moment and try again.',
+        );
+      }
       throw const RoadDirectionsException(
         'Destination or route service is temporarily unavailable. Retry shortly.',
       );
@@ -163,6 +286,19 @@ class RoadDirectionsService {
     if (value is num) return value.toDouble();
     if (value is String) return double.tryParse(value);
     return null;
+  }
+
+  static String _joinPlaceParts(Iterable<String?> parts) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final part in parts) {
+      final value = part?.trim();
+      if (value == null || value.isEmpty || !seen.add(value.toLowerCase())) {
+        continue;
+      }
+      result.add(value);
+    }
+    return result.join(', ');
   }
 
   void close() {

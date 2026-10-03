@@ -5,11 +5,21 @@ class GeocodedDestination {
     required this.name,
     required this.address,
     required this.location,
+    this.displayName,
+    this.placeId,
+    this.addressComponents = const {},
   });
 
   final String name;
   final String address;
   final LatLng location;
+  final String? displayName;
+  final String? placeId;
+  final Map<String, String> addressComponents;
+
+  String get displayLabel => displayName?.trim().isNotEmpty == true
+      ? displayName!.trim()
+      : name;
 }
 
 class RoadRoute {

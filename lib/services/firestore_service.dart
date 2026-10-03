@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
 import '../models/charging_card.dart';
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
@@ -41,7 +44,7 @@ class FirestoreService {
     required String vehicleId,
   }) async {
     _requireCurrentUser(uid);
-    await _requireConnectedVehicle(uid, vehicleId);
+    await _requireOwnedVehicle(uid, vehicleId);
     final snapshot = await _chargingCardDocument(uid, vehicleId).get();
     final data = snapshot.data();
     if (!snapshot.exists || data == null) return null;
@@ -51,13 +54,100 @@ class FirestoreService {
   Stream<ChargingCard?> watchChargingCard(
     String uid, {
     required String vehicleId,
+    String? vehicleModel,
+    String? vehicleRegistration,
   }) {
-    _requireCurrentUser(uid);
-    return _chargingCardDocument(uid, vehicleId).snapshots().map((snapshot) {
-      final data = snapshot.data();
-      if (!snapshot.exists || data == null) return null;
-      return ChargingCard.fromMap(data, id: snapshot.id);
-    });
+    final authenticatedUser = FirebaseAuth.instance.currentUser;
+    final cardDocument = _chargingCardDocument(uid, vehicleId);
+    debugPrint('[CHARGING CARD READ DEBUG]');
+    debugPrint(
+      '[CHARGING CARD READ DEBUG] Firebase project ID: '
+      '${_firestore.app.options.projectId}',
+    );
+    debugPrint('[CHARGING CARD READ DEBUG] Firestore database: (default)');
+    debugPrint(
+      '[CHARGING CARD READ DEBUG] Authenticated UID: '
+      '${authenticatedUser?.uid ?? '<none>'}',
+    );
+    debugPrint(
+      '[CHARGING CARD READ DEBUG] Authenticated email: '
+      '${authenticatedUser?.email ?? '<none>'}',
+    );
+    debugPrint('[CHARGING CARD READ DEBUG] Selected vehicle ID: $vehicleId');
+    debugPrint(
+      '[CHARGING CARD READ DEBUG] Selected vehicle model: '
+      '${vehicleModel ?? '<not supplied>'}',
+    );
+    debugPrint(
+      '[CHARGING CARD READ DEBUG] Selected vehicle registration: '
+      '${vehicleRegistration ?? '<not supplied>'}',
+    );
+    debugPrint(
+      '[CHARGING CARD READ DEBUG] Exact Firestore document path: '
+      '${cardDocument.path}',
+    );
+    debugPrint(
+      '[CHARGING CARD READ DEBUG] Is currentUser null: '
+      '${authenticatedUser == null}',
+    );
+    try {
+      _requireCurrentUser(uid);
+    } catch (error) {
+      debugPrint('[CHARGING CARD READ DEBUG] READ FAILED');
+      debugPrint('[CHARGING CARD READ DEBUG] Error: $error');
+      rethrow;
+    }
+    return cardDocument.snapshots().transform(
+      StreamTransformer<
+        DocumentSnapshot<Map<String, dynamic>>,
+        ChargingCard?
+      >.fromHandlers(
+        handleData: (snapshot, sink) {
+          debugPrint(
+            '[CHARGING CARD READ DEBUG] Does the card document exist: '
+            '${snapshot.exists}',
+          );
+          debugPrint(
+            '[CHARGING CARD READ DEBUG] Snapshot is from cache: '
+            '${snapshot.metadata.isFromCache}',
+          );
+          if (!snapshot.exists) {
+            debugPrint(
+              '[CHARGING CARD READ DEBUG] Document does not exist at '
+              '${cardDocument.path}',
+            );
+            sink.add(null);
+            return;
+          }
+          final data = snapshot.data();
+          if (data == null) {
+            final error = StateError(
+              'Firestore returned an existing card document without data.',
+            );
+            debugPrint('[CHARGING CARD READ DEBUG] READ FAILED');
+            debugPrint('[CHARGING CARD READ DEBUG] Error: $error');
+            sink.addError(error, StackTrace.current);
+            return;
+          }
+          debugPrint('[CHARGING CARD READ DEBUG] Read SUCCESS');
+          sink.add(ChargingCard.fromMap(data, id: snapshot.id));
+        },
+        handleError: (Object error, StackTrace stackTrace, sink) {
+          debugPrint('[CHARGING CARD READ DEBUG] READ FAILED');
+          if (error is FirebaseException) {
+            debugPrint(
+              '[CHARGING CARD READ DEBUG] Exact FirebaseException code: ${error.code}',
+            );
+            debugPrint(
+              '[CHARGING CARD READ DEBUG] Exact FirebaseException message: ${error.message}',
+            );
+          } else {
+            debugPrint('[CHARGING CARD READ DEBUG] Error: $error');
+          }
+          sink.addError(error, stackTrace);
+        },
+      ),
+    );
   }
 
   Future<Map<String, dynamic>?> getLegacyChargingCardSummary({
@@ -95,8 +185,21 @@ class FirestoreService {
     required String vehicleId,
   }) async {
     _requireCurrentUser(uid);
-    await _functions.httpsCallable('setConnectedVehicle').call<void>({
-      'vehicleId': vehicleId,
+    final normalizedVehicleId = vehicleId.trim();
+    if (normalizedVehicleId.isEmpty) {
+      throw ArgumentError.value(vehicleId, 'vehicleId', 'Cannot be empty.');
+    }
+    await _firestore.runTransaction((transaction) async {
+      final vehicle = await _validateOwnedVehicleInTransaction(
+        transaction,
+        uid: uid,
+        vehicleId: normalizedVehicleId,
+      );
+      transaction.update(_userDocument(uid), {
+        'vehicleId': normalizedVehicleId,
+        'vehicleRegistrationNumber': vehicle.registrationNumber,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
     });
   }
 
@@ -225,6 +328,87 @@ class FirestoreService {
     });
   }
 
+  Stream<List<Vehicle>> watchLinkedVehicles(String uid) {
+    _requireCurrentUser(uid);
+    final controller = StreamController<List<Vehicle>>();
+    final vehicleSubscriptions =
+        <String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>{};
+    final vehicles = <String, Vehicle>{};
+    var primaryVehicleId = '';
+    var membershipVehicleIds = <String>{};
+
+    void emitVehicles() {
+      final sorted = vehicles.values.toList()
+        ..sort((a, b) {
+          final modelOrder = a.model.compareTo(b.model);
+          return modelOrder != 0 ? modelOrder : a.id.compareTo(b.id);
+        });
+      if (!controller.isClosed) controller.add(List.unmodifiable(sorted));
+    }
+
+    void refreshVehicleSubscriptions() {
+      final linkedIds = <String>{
+        if (primaryVehicleId.isNotEmpty) primaryVehicleId,
+        ...membershipVehicleIds,
+      };
+      for (final removedId
+          in vehicleSubscriptions.keys
+              .where((id) => !linkedIds.contains(id))
+              .toList()) {
+        vehicleSubscriptions.remove(removedId)?.cancel();
+        vehicles.remove(removedId);
+      }
+      for (final vehicleId in linkedIds) {
+        if (vehicleSubscriptions.containsKey(vehicleId)) continue;
+        vehicleSubscriptions[vehicleId] = _firestore
+            .collection('vehicles')
+            .doc(vehicleId)
+            .snapshots()
+            .listen((snapshot) {
+              final data = snapshot.data();
+              if (!snapshot.exists || data == null) {
+                vehicles.remove(vehicleId);
+              } else {
+                final vehicle = Vehicle.fromMap(data, id: snapshot.id);
+                if (vehicle.isActive) {
+                  vehicles[vehicleId] = vehicle;
+                } else {
+                  vehicles.remove(vehicleId);
+                }
+              }
+              emitVehicles();
+            }, onError: controller.addError);
+      }
+      emitVehicles();
+    }
+
+    final profileSubscription = watchUserProfile(uid).listen((profile) {
+      primaryVehicleId = profile?.vehicleId?.trim() ?? '';
+      refreshVehicleSubscriptions();
+    }, onError: controller.addError);
+    final membershipSubscription = _userDocument(uid)
+        .collection('vehicles')
+        .snapshots()
+        .listen((memberships) {
+          membershipVehicleIds = memberships.docs
+              .map((document) => document.id)
+              .toSet();
+          refreshVehicleSubscriptions();
+        }, onError: controller.addError);
+
+    controller.onCancel = () async {
+      await profileSubscription.cancel();
+      await membershipSubscription.cancel();
+      await Future.wait(
+        vehicleSubscriptions.values.map(
+          (subscription) => subscription.cancel(),
+        ),
+      );
+      vehicleSubscriptions.clear();
+    };
+    return controller.stream;
+  }
+
   Future<void> _requireConnectedVehicle(String uid, String vehicleId) async {
     final normalizedVehicleId = vehicleId.trim();
     if (normalizedVehicleId.isEmpty) {
@@ -242,29 +426,69 @@ class FirestoreService {
     }
   }
 
-  Future<void> _validateConnectedVehicleInTransaction(
+  Future<void> _requireOwnedVehicle(String uid, String vehicleId) async {
+    final normalizedVehicleId = vehicleId.trim();
+    if (normalizedVehicleId.isEmpty) {
+      throw ArgumentError.value(vehicleId, 'vehicleId', 'Cannot be empty.');
+    }
+    final profile = await getUserProfile(uid);
+    final membership = await _userDocument(
+      uid,
+    ).collection('vehicles').doc(normalizedVehicleId).get();
+    if (profile == null ||
+        (profile.vehicleId != normalizedVehicleId && !membership.exists)) {
+      throw StateError('This vehicle is not linked to your account.');
+    }
+    final vehicle = await getVehicleRecordById(normalizedVehicleId);
+    if (vehicle == null || !vehicle.isActive) {
+      throw StateError('The linked vehicle is unavailable or inactive.');
+    }
+  }
+
+  Future<Vehicle> _validateOwnedVehicleInTransaction(
     Transaction transaction, {
     required String uid,
     required String vehicleId,
   }) async {
     final userDocument = _userDocument(uid);
+    final membershipDocument = userDocument
+        .collection('vehicles')
+        .doc(vehicleId);
     final vehicleDocument = _firestore.collection('vehicles').doc(vehicleId);
     final userSnapshot = await transaction.get(userDocument);
+    final membershipSnapshot = await transaction.get(membershipDocument);
     final vehicleSnapshot = await transaction.get(vehicleDocument);
     final userData = userSnapshot.data();
     final vehicleData = vehicleSnapshot.data();
+    final membershipData = membershipSnapshot.data();
     if (!userSnapshot.exists ||
-        userData?['uid'] != uid ||
-        userData?['vehicleId'] != vehicleId) {
-      throw StateError(
-        'This vehicle is not currently connected to your account.',
-      );
+        (userData?['vehicleId'] != vehicleId && !membershipSnapshot.exists)) {
+      throw StateError('This vehicle is not linked to your account.');
     }
     if (!vehicleSnapshot.exists ||
         vehicleData == null ||
         vehicleData['isActive'] != true) {
-      throw StateError('The connected vehicle is unavailable or inactive.');
+      throw StateError('The linked vehicle is unavailable or inactive.');
     }
+    if (userData?['vehicleId'] == vehicleId &&
+        userData?['vehicleRegistrationNumber'] is String &&
+        userData?['vehicleRegistrationNumber'] !=
+            vehicleData['registrationNumber']) {
+      throw StateError(
+        'The vehicle registration does not match your linked user profile.',
+      );
+    }
+    if (membershipSnapshot.exists &&
+        (membershipData?['uid'] != uid ||
+            membershipData?['vehicleId'] != vehicleId ||
+            (membershipData?['registrationNumber'] is String &&
+                membershipData?['registrationNumber'] !=
+                    vehicleData['registrationNumber']))) {
+      throw StateError(
+        'The linked vehicle record does not match this vehicle.',
+      );
+    }
+    return Vehicle.fromMap(vehicleData, id: vehicleSnapshot.id);
   }
 
   Future<ChargingCard> registerChargingCard({
@@ -276,11 +500,52 @@ class FirestoreService {
     DateTime? expiryDate,
     String currency = 'INR',
   }) async {
-    _requireCurrentUser(uid);
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      throw StateError('Please sign in before registering a charging card.');
+    }
+    final authenticatedUid = user.uid;
+    if (uid != authenticatedUid) {
+      throw StateError('The signed-in user changed before card registration.');
+    }
+    final normalizedVehicleId = vehicleId.trim();
+    final cardDocument = _chargingCardDocument(
+      authenticatedUid,
+      normalizedVehicleId,
+    );
+    debugPrint('[CARD PROD DEBUG] Starting Firestore registration');
+    debugPrint(
+      '[CARD PROD DEBUG] Firebase project ID: '
+      '${_firestore.app.options.projectId}',
+    );
+    debugPrint('[CARD PROD DEBUG] Firestore database: (default)');
+    debugPrint(
+      '[CARD PROD DEBUG] Firestore emulator routing: not configured '
+      '(no useFirestoreEmulator call in lib/)',
+    );
+    debugPrint('[CARD PROD DEBUG] Authenticated email: ${user.email}');
+    debugPrint('[CARD PROD DEBUG] Authenticated UID: $authenticatedUid');
+    debugPrint(
+      '[CARD PROD DEBUG] FirebaseFirestore.instance is active instance: '
+      '${identical(_firestore, FirebaseFirestore.instance)}',
+    );
+    debugPrint('[CARD PROD DEBUG] Vehicle ID: $normalizedVehicleId');
+    debugPrint(
+      '[CARD PROD DEBUG] Target path:\n'
+      '${cardDocument.path}',
+    );
+    try {
+      _requireCurrentUser(authenticatedUid);
+    } on FirebaseException catch (error) {
+      _logChargingCardWriteFailure(error);
+      rethrow;
+    } catch (error) {
+      debugPrint('[CHARGING CARD WRITE ERROR] $error');
+      rethrow;
+    }
     final normalizedType = cardType.trim();
     final normalizedNumber = cardNumber.trim();
     final normalizedHolder = cardHolderName.trim();
-    final normalizedVehicleId = vehicleId.trim();
     final normalizedCurrency = currency.trim().toUpperCase();
     if (normalizedType.isEmpty ||
         _cardLastFour(normalizedNumber) == null ||
@@ -292,40 +557,155 @@ class FirestoreService {
         'Complete all charging card fields and use a three-letter currency code.',
       );
     }
-    final cardDocument = _chargingCardDocument(uid, normalizedVehicleId);
-    await _firestore.runTransaction((transaction) async {
-      await _validateConnectedVehicleInTransaction(
-        transaction,
-        uid: uid,
-        vehicleId: normalizedVehicleId,
+    late Vehicle verifiedVehicle;
+    try {
+      debugPrint(
+        '[CARD PROD DEBUG] Pre-registration server read path: '
+        '${cardDocument.path}',
       );
-      final current = await transaction.get(cardDocument);
-      if (current.exists) {
+      final beforeWrite = await cardDocument.get(
+        const GetOptions(source: Source.server),
+      );
+      debugPrint(
+        '[CARD PROD DEBUG] Pre-registration server read exists: '
+        '${beforeWrite.exists}',
+      );
+      if (beforeWrite.exists) {
         throw StateError(
           'A charging card is already registered for this vehicle.',
         );
       }
-      transaction.set(cardDocument, {
-        'cardId': cardDocument.id,
-        'cardType': normalizedType,
-        'maskedCardNumber': _maskedCardNumber(normalizedNumber),
-        'cardHolderName': normalizedHolder,
-        'vehicleId': normalizedVehicleId,
-        'expiryDate': Timestamp.fromDate(expiryDate),
-        'balance': 0.0,
-        'currency': normalizedCurrency,
-        'status': 'ACTIVE',
-        'registeredAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
+      await _firestore.runTransaction((transaction) async {
+        final vehicle = await _validateOwnedVehicleInTransaction(
+          transaction,
+          uid: authenticatedUid,
+          vehicleId: normalizedVehicleId,
+        );
+        verifiedVehicle = vehicle;
+        debugPrint('[CARD PROD DEBUG] Authenticated user exists: true');
+        debugPrint('[CARD PROD DEBUG] UID matches requested account: true');
+        debugPrint('[CARD PROD DEBUG] Vehicle exists: true');
+        debugPrint(
+          '[CARD PROD DEBUG] Vehicle belongs to authenticated user: true',
+        );
+        debugPrint('[CARD PROD DEBUG] Vehicle active: ${vehicle.isActive}');
+        debugPrint('[CARD PROD DEBUG] Verified vehicle ID: ${vehicle.id}');
+        final current = await transaction.get(cardDocument);
+        if (current.exists) {
+          throw StateError(
+            'A charging card is already registered for this vehicle.',
+          );
+        }
+        debugPrint('[CARD PROD DEBUG] Vehicle model: ${vehicle.model}');
+        debugPrint(
+          '[CARD PROD DEBUG] Vehicle registration: '
+          '${vehicle.registrationNumber}',
+        );
+        debugPrint('[CARD PROD DEBUG] Creating Firestore card document...');
+        transaction.set(cardDocument, {
+          'cardId': cardDocument.id,
+          'cardType': normalizedType,
+          'maskedCardNumber': _maskedCardNumber(normalizedNumber),
+          'cardHolderName': normalizedHolder,
+          'vehicleId': normalizedVehicleId,
+          'vehicleModel': vehicle.model,
+          'vehicleRegistrationNumber': vehicle.registrationNumber,
+          'vehicleVin': vehicle.vin,
+          'expiryDate': Timestamp.fromDate(expiryDate),
+          'balance': 0.0,
+          'currency': normalizedCurrency,
+          'status': 'ACTIVE',
+          'registeredAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
       });
-    });
-    final card = await getChargingCard(uid, vehicleId: normalizedVehicleId);
-    if (card == null) {
-      throw StateError(
-        'Charging card registration succeeded, but the Firestore document could not be reloaded.',
+      debugPrint('[CARD PROD DEBUG] WRITE COMPLETED');
+      debugPrint(
+        '[CARD PROD DEBUG] Written document path: ${cardDocument.path}',
       );
+    } catch (error) {
+      _logChargingCardWriteFailure(error);
+      rethrow;
     }
-    return card;
+
+    try {
+      debugPrint('[CARD PROD DEBUG] SERVER READ PATH: ${cardDocument.path}');
+      final snapshot = await cardDocument.get(
+        const GetOptions(source: Source.server),
+      );
+      debugPrint('[CARD PROD DEBUG] SERVER READ EXISTS: ${snapshot.exists}');
+      final data = snapshot.data();
+      if (!snapshot.exists || data == null) {
+        debugPrint(
+          '[CARD PROD ERROR] WRITE COMPLETED BUT SERVER READ SAYS DOCUMENT '
+          'DOES NOT EXIST.',
+        );
+        throw StateError(
+          'Charging card registration failed: Firestore document was not '
+          'created at ${cardDocument.path}.',
+        );
+      }
+      final storedExpiry = data['expiryDate'];
+      if (data['cardId'] != 'current' ||
+          data['cardType'] != normalizedType ||
+          data['maskedCardNumber'] != _maskedCardNumber(normalizedNumber) ||
+          data['cardHolderName'] != normalizedHolder ||
+          data['vehicleId'] != normalizedVehicleId ||
+          data['vehicleModel'] != verifiedVehicle.model ||
+          data['vehicleRegistrationNumber'] !=
+              verifiedVehicle.registrationNumber ||
+          data['vehicleVin'] != verifiedVehicle.vin ||
+          storedExpiry is! Timestamp ||
+          !storedExpiry.toDate().isAtSameMomentAs(expiryDate) ||
+          data['balance'] != 0 ||
+          data['currency'] != normalizedCurrency ||
+          data['status'] != 'ACTIVE' ||
+          data['registeredAt'] is! Timestamp ||
+          data['updatedAt'] is! Timestamp ||
+          data.containsKey('cardNumber') ||
+          data.containsKey('cvv') ||
+          data.containsKey('pin') ||
+          data.containsKey('paymentPassword')) {
+        throw StateError(
+          'Firestore read-back returned data that failed card verification.',
+        );
+      }
+      const safeFields = [
+        'cardType',
+        'maskedCardNumber',
+        'cardHolderName',
+        'vehicleId',
+        'vehicleModel',
+        'vehicleRegistrationNumber',
+        'vehicleVin',
+        'expiryDate',
+        'balance',
+        'currency',
+        'status',
+      ];
+      final safeData = {
+        for (final field in safeFields)
+          if (data.containsKey(field)) field: data[field],
+      };
+      debugPrint('[CARD PROD DEBUG] SERVER DOCUMENT DATA: $safeData');
+      return ChargingCard.fromMap(data, id: snapshot.id);
+    } catch (error) {
+      _logChargingCardWriteFailure(error);
+      rethrow;
+    }
+  }
+
+  void _logChargingCardWriteFailure(Object error) {
+    if (error is FirebaseException) {
+      debugPrint('[CARD PROD ERROR]');
+      debugPrint('[CARD PROD ERROR] Firebase exception code: ${error.code}');
+      debugPrint(
+        '[CARD PROD ERROR] Firebase exception message: ${error.message}',
+      );
+      debugPrint('[CARD PROD ERROR] Exception: $error');
+    } else {
+      debugPrint('[CARD PROD ERROR] Exception: $error');
+    }
   }
 
   Future<ChargingCard> updateChargingCardDetails({
@@ -351,7 +731,7 @@ class FirestoreService {
     }
     final cardDocument = _chargingCardDocument(uid, normalizedVehicleId);
     await _firestore.runTransaction((transaction) async {
-      await _validateConnectedVehicleInTransaction(
+      final vehicle = await _validateOwnedVehicleInTransaction(
         transaction,
         uid: uid,
         vehicleId: normalizedVehicleId,
@@ -365,6 +745,9 @@ class FirestoreService {
         'cardType': normalizedType,
         'cardHolderName': normalizedHolder,
         'vehicleId': normalizedVehicleId,
+        'vehicleModel': vehicle.model,
+        'vehicleRegistrationNumber': vehicle.registrationNumber,
+        'vehicleVin': vehicle.vin,
         'expiryDate': Timestamp.fromDate(expiryDate),
         'updatedAt': FieldValue.serverTimestamp(),
       };
@@ -375,6 +758,11 @@ class FirestoreService {
         final legacyNumber = data['cardNumber'] as String;
         updates['maskedCardNumber'] = _maskedCardNumber(legacyNumber);
         updates['cardNumber'] = FieldValue.delete();
+      }
+      for (final sensitiveField in const ['cvv', 'pin', 'paymentPassword']) {
+        if (data.containsKey(sensitiveField)) {
+          updates[sensitiveField] = FieldValue.delete();
+        }
       }
       transaction.update(cardDocument, updates);
     });
@@ -387,30 +775,35 @@ class FirestoreService {
     return card;
   }
 
-  /// Debits require a trusted backend, which the app does not currently have.
+  /// Debits only a server-confirmed charging session; the client cannot submit
+  /// the amount or station details used by the backend.
   Future<ChargingCard> debitChargingCardAfterConfirmedSession({
     required String uid,
-    required double amount,
-    required String stationId,
-    required String stationName,
-    String? operator,
-    required String vehicleId,
-    required String description,
+    required String sessionId,
   }) async {
     _requireCurrentUser(uid);
-    if (!amount.isFinite ||
-        amount <= 0 ||
-        stationId.trim().isEmpty ||
-        stationName.trim().isEmpty ||
-        vehicleId.trim().isEmpty ||
-        description.trim().isEmpty) {
-      throw ArgumentError('A valid confirmed charging session is required.');
+    final normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      throw ArgumentError(
+        'A confirmed charging-session reference is required.',
+      );
     }
-    _requireCurrentUser(uid);
-    throw StateError(
-      'Charging-card debits require a trusted charging-session backend. '
-      'No confirmed-session provider is configured in this application.',
-    );
+    final response = await _functions
+        .httpsCallable('debitConfirmedChargingSession')
+        .call<Map<String, dynamic>>({'sessionId': normalizedSessionId});
+    final vehicleId = response.data['vehicleId'];
+    if (vehicleId is! String || vehicleId.isEmpty) {
+      throw StateError(
+        'The charging-session service did not identify the charged vehicle.',
+      );
+    }
+    final card = await getChargingCard(uid, vehicleId: vehicleId);
+    if (card == null) {
+      throw StateError(
+        'The charging session was processed, but the updated card could not be loaded.',
+      );
+    }
+    return card;
   }
 
   static String? _cardLastFour(String value) {

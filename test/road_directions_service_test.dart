@@ -69,4 +69,100 @@ void main() {
 
     expect(service.geocode('  '), throwsArgumentError);
   });
+
+  test('searches Photon place autocomplete and preserves place metadata', () async {
+    final client = MockClient((request) async {
+      expect(request.url.host, 'photon.komoot.io');
+      expect(request.url.path, '/api');
+      expect(request.url.queryParameters['q'], 'Chennai Central');
+      expect(request.url.queryParameters['limit'], '6');
+      expect(request.url.queryParameters['lat'], '13.08');
+      expect(request.url.queryParameters['lon'], '80.27');
+      return http.Response(
+        jsonEncode({
+          'features': [
+            {
+              'geometry': {
+                'type': 'Point',
+                'coordinates': [80.275, 13.082],
+              },
+              'properties': {
+                'name': 'Chennai Central Railway Station',
+                'city': 'Chennai',
+                'state': 'Tamil Nadu',
+                'country': 'India',
+                'osm_type': 'N',
+                'osm_id': 12345,
+              },
+            },
+            {
+              'geometry': {
+                'type': 'Point',
+                'coordinates': [80.2, 13.1],
+              },
+              'properties': {'country': 'India'},
+            },
+          ],
+        }),
+        200,
+      );
+    });
+    final service = RoadDirectionsService(client: client);
+    addTearDown(client.close);
+
+    final places = await service.searchPlaces(
+      ' Chennai Central ',
+      proximity: const LatLng(13.08, 80.27),
+    );
+
+    expect(places, hasLength(1));
+    expect(places.single.name, 'Chennai Central Railway Station');
+    expect(places.single.displayLabel, 'Chennai Central Railway Station');
+    expect(
+      places.single.address,
+      'Chennai Central Railway Station, Chennai, Tamil Nadu, India',
+    );
+    expect(places.single.location, const LatLng(13.082, 80.275));
+    expect(places.single.placeId, 'N/12345');
+    expect(places.single.addressComponents['state'], 'Tamil Nadu');
+  });
+
+  test('skips provider calls for too-short place searches', () async {
+    var requests = 0;
+    final client = MockClient((_) async {
+      requests++;
+      return http.Response('{"features":[]}', 200);
+    });
+    final service = RoadDirectionsService(client: client);
+    addTearDown(client.close);
+
+    expect(await service.searchPlaces('Ch'), isEmpty);
+    expect(requests, 0);
+  });
+
+  test('reports rate limiting and malformed place responses', () async {
+    final rateLimitedService = RoadDirectionsService(
+      client: MockClient((_) async => http.Response('rate limited', 429)),
+    );
+    addTearDown(rateLimitedService.close);
+    await expectLater(
+      rateLimitedService.searchPlaces('Chennai'),
+      throwsA(
+        isA<RoadDirectionsException>().having(
+          (error) => error.message,
+          'message',
+          contains('rate limited'),
+        ),
+      ),
+    );
+
+    final invalidService = RoadDirectionsService(
+      client: MockClient((_) async => http.Response('{"features":{}}', 200)),
+    );
+    addTearDown(invalidService.close);
+    await expectLater(
+      invalidService.searchPlaces('Chennai'),
+      throwsFormatException,
+    );
+  });
 }

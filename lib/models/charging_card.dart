@@ -12,6 +12,9 @@ class ChargingCard {
     this.currency,
     this.status,
     this.vehicleId,
+    this.vehicleModel,
+    this.vehicleRegistrationNumber,
+    this.vehicleVin,
     this.expiryDate,
     this.registeredAt,
     this.lastRechargeAmount,
@@ -28,6 +31,9 @@ class ChargingCard {
   final String? currency;
   final String? status;
   final String? vehicleId;
+  final String? vehicleModel;
+  final String? vehicleRegistrationNumber;
+  final String? vehicleVin;
   final DateTime? expiryDate;
   final DateTime? registeredAt;
   final double? lastRechargeAmount;
@@ -62,6 +68,9 @@ class ChargingCard {
       currency: _string(map['currency']),
       status: _string(map['status']),
       vehicleId: _string(map['vehicleId'] ?? map['linkedVehicleId']),
+      vehicleModel: _string(map['vehicleModel']),
+      vehicleRegistrationNumber: _string(map['vehicleRegistrationNumber']),
+      vehicleVin: _string(map['vehicleVin']),
       expiryDate: _date(map['expiryDate']),
       registeredAt: _date(map['registeredAt'] ?? map['createdAt']),
       lastRechargeAmount: _number(map['lastRechargeAmount']),

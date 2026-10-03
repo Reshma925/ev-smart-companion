@@ -9,13 +9,6 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == uid;
     }
 
-    function activeVehicle(vehicleId, registrationNumber) {
-      let path = /databases/$(database)/documents/vehicles/$(vehicleId);
-      return exists(path)
-        && get(path).data.isActive == true
-        && get(path).data.registrationNumber == registrationNumber;
-    }
-
     function ownsVehicle(vehicleId) {
       let userPath = /databases/$(database)/documents/users/$(request.auth.uid);
       return signedIn()
@@ -28,14 +21,52 @@ service cloud.firestore {
         );
     }
 
+    function userOwnsVehicle(uid, vehicleId) {
+      let userPath = /databases/$(database)/documents/users/$(uid);
+      let membershipPath = /databases/$(database)/documents/users/$(uid)/vehicles/$(vehicleId);
+      let vehiclePath = /databases/$(database)/documents/vehicles/$(vehicleId);
+      return ownsUser(uid)
+        && exists(userPath)
+        && (
+          get(userPath).data.vehicleId == vehicleId
+          || (
+            exists(membershipPath)
+            && get(membershipPath).data.uid == uid
+            && get(membershipPath).data.vehicleId == vehicleId
+          )
+        )
+        && exists(vehiclePath)
+        && get(vehiclePath).data.isActive == true;
+    }
+
     match /users/{uid} {
       allow read: if ownsUser(uid);
       allow create: if false;
       allow update: if ownsUser(uid)
         && request.resource.data.uid == resource.data.uid
-        && request.resource.data.vehicleId == resource.data.vehicleId
-        && request.resource.data.vehicleRegistrationNumber
-          == resource.data.vehicleRegistrationNumber
+        && (
+          (
+            request.resource.data.vehicleId == resource.data.vehicleId
+            && request.resource.data.vehicleRegistrationNumber
+              == resource.data.vehicleRegistrationNumber
+          )
+          || (
+            request.resource.data.vehicleId is string
+            && exists(
+              /databases/$(database)/documents/users/$(uid)/vehicles/$(request.resource.data.vehicleId)
+            )
+            && exists(
+              /databases/$(database)/documents/vehicles/$(request.resource.data.vehicleId)
+            )
+            && get(
+              /databases/$(database)/documents/vehicles/$(request.resource.data.vehicleId)
+            ).data.isActive == true
+            && request.resource.data.vehicleRegistrationNumber
+              == get(
+                /databases/$(database)/documents/vehicles/$(request.resource.data.vehicleId)
+              ).data.registrationNumber
+          )
+        )
         && request.resource.data.name is string
         && request.resource.data.email is string
         && request.resource.data.phone is string
@@ -46,7 +77,8 @@ service cloud.firestore {
             'profileImageUrl', 'preferredDrivingMode',
             'preferredChargingMode', 'notificationPreference',
             'distanceUnit', 'notificationsEnabled', 'locationEnabled',
-            'preferences', 'updatedAt'
+            'preferences', 'vehicleId', 'vehicleRegistrationNumber',
+            'updatedAt'
           ])
         && (
           !request.resource.data.keys().hasAny(['city'])
@@ -91,106 +123,119 @@ service cloud.firestore {
       allow delete: if false;
 
       match /vehicles/{vehicleId} {
-        allow read: if ownsUser(uid)
-          && ownsVehicle(vehicleId)
-          && exists(/databases/$(database)/documents/vehicles/$(vehicleId))
-          && get(/databases/$(database)/documents/vehicles/$(vehicleId)).data.isActive
-            == true;
+        allow read: if ownsUser(uid);
         allow create, update, delete: if false;
 
         match /chargingCard/{cardId} {
-          allow read: if ownsUser(uid)
-            && ownsVehicle(vehicleId)
+          allow read: if userOwnsVehicle(uid, vehicleId)
             && cardId == 'current'
-            && exists(/databases/$(database)/documents/vehicles/$(vehicleId))
-            && get(/databases/$(database)/documents/vehicles/$(vehicleId)).data.isActive
-              == true;
-        allow create: if ownsUser(uid)
-          && ownsVehicle(vehicleId)
-          && cardId == 'current'
-          && !exists(
-            /databases/$(database)/documents/users/$(uid)/chargingCard/current
-          )
-          && exists(/databases/$(database)/documents/vehicles/$(vehicleId))
-          && get(/databases/$(database)/documents/vehicles/$(vehicleId)).data.isActive
-            == true
-          && request.resource.data.keys().hasAll([
-            'cardId', 'cardType', 'maskedCardNumber', 'cardHolderName',
-            'vehicleId', 'expiryDate', 'balance', 'currency', 'status',
-            'registeredAt', 'updatedAt'
-          ])
-          && request.resource.data.keys().hasOnly([
-            'cardId', 'cardType', 'maskedCardNumber', 'cardHolderName',
-            'vehicleId', 'expiryDate', 'balance', 'currency', 'status',
-            'registeredAt', 'updatedAt'
-          ])
-          && request.resource.data.cardId == cardId
-          && request.resource.data.cardType is string
-          && request.resource.data.cardType.size() > 0
-          && request.resource.data.maskedCardNumber is string
-          && request.resource.data.maskedCardNumber.matches(
-            '^XXXX XXXX XXXX [A-Za-z0-9]{4}$'
-          )
-          && request.resource.data.cardHolderName is string
-          && request.resource.data.cardHolderName.size() > 0
-          && request.resource.data.vehicleId == vehicleId
-          && request.resource.data.balance == 0
-          && request.resource.data.currency is string
-          && request.resource.data.currency.size() == 3
-          && request.resource.data.status == 'ACTIVE'
-          && request.resource.data.expiryDate is timestamp
-          && request.resource.data.registeredAt is timestamp
-          && request.resource.data.updatedAt is timestamp;
-        allow update: if ownsUser(uid)
-          && ownsVehicle(vehicleId)
-          && cardId == 'current'
-          && get(/databases/$(database)/documents/users/$(uid)).data.vehicleId
-            == vehicleId
-          && exists(/databases/$(database)/documents/vehicles/$(vehicleId))
-          && get(/databases/$(database)/documents/vehicles/$(vehicleId)).data.isActive
-            == true
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly([
-              'cardType', 'maskedCardNumber', 'cardNumber', 'cardHolderName',
-              'expiryDate', 'updatedAt'
+            && (
+              !exists(
+                /databases/$(database)/documents/users/$(uid)/vehicles/$(vehicleId)/chargingCard/current
+              )
+              || resource.data.vehicleId == vehicleId
+            );
+          allow create: if userOwnsVehicle(uid, vehicleId)
+            && cardId == 'current'
+            && request.resource.data.keys().hasAll([
+              'cardId', 'cardType', 'maskedCardNumber', 'cardHolderName',
+              'vehicleId', 'vehicleModel', 'vehicleRegistrationNumber',
+              'vehicleVin', 'expiryDate', 'balance', 'currency', 'status',
+              'registeredAt', 'updatedAt'
             ])
-          && request.resource.data.cardType is string
-          && request.resource.data.cardType.size() > 0
-          && request.resource.data.maskedCardNumber is string
-          && request.resource.data.maskedCardNumber.matches(
-            '^XXXX XXXX XXXX [A-Za-z0-9]{4}$'
-          )
-          && !request.resource.data.keys().hasAny(['cardNumber'])
-          && request.resource.data.cardHolderName is string
-          && request.resource.data.cardHolderName.size() > 0
-          && request.resource.data.vehicleId == vehicleId
-          && request.resource.data.balance == resource.data.balance
-          && request.resource.data.status == resource.data.status
-          && request.resource.data.currency == resource.data.currency
-          && request.resource.data.cardId == resource.data.cardId
-          && request.resource.data.expiryDate is timestamp
-          && request.resource.data.updatedAt is timestamp;
-        allow delete: if false;
-
-        match /transactions/{transactionId} {
-          allow read: if ownsUser(uid)
-            && ownsVehicle(vehicleId)
+            && request.resource.data.keys().hasOnly([
+              'cardId', 'cardType', 'maskedCardNumber', 'cardHolderName',
+              'vehicleId', 'vehicleModel', 'vehicleRegistrationNumber',
+              'vehicleVin', 'expiryDate', 'balance', 'currency', 'status',
+              'registeredAt', 'updatedAt'
+            ])
+            && request.resource.data.cardId == cardId
+            && request.resource.data.cardType is string
+            && request.resource.data.cardType.size() > 0
+            && request.resource.data.maskedCardNumber is string
+            && request.resource.data.maskedCardNumber.matches(
+              '^XXXX XXXX XXXX [A-Za-z0-9]{4}$'
+            )
+            && request.resource.data.cardHolderName is string
+            && request.resource.data.cardHolderName.size() > 0
+            && request.resource.data.vehicleId == vehicleId
+            && request.resource.data.vehicleModel
+              == get(
+                /databases/$(database)/documents/vehicles/$(vehicleId)
+              ).data.model
+            && request.resource.data.vehicleRegistrationNumber
+              == get(
+                /databases/$(database)/documents/vehicles/$(vehicleId)
+              ).data.registrationNumber
+            && request.resource.data.vehicleVin
+              == get(
+                /databases/$(database)/documents/vehicles/$(vehicleId)
+              ).data.vin
+            && request.resource.data.balance == 0
+            && request.resource.data.currency is string
+            && request.resource.data.currency.size() == 3
+            && request.resource.data.status == 'ACTIVE'
+            && request.resource.data.expiryDate is timestamp
+            && request.resource.data.registeredAt is timestamp
+            && request.resource.data.updatedAt is timestamp;
+          allow update: if userOwnsVehicle(uid, vehicleId)
             && cardId == 'current'
-            && exists(/databases/$(database)/documents/vehicles/$(vehicleId))
-            && get(/databases/$(database)/documents/vehicles/$(vehicleId)).data.isActive
-              == true;
-          allow write: if false;
-        }
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly([
+                'cardType', 'maskedCardNumber', 'cardHolderName',
+                'expiryDate', 'vehicleModel', 'vehicleRegistrationNumber',
+                'vehicleVin', 'updatedAt', 'cardNumber', 'cvv', 'pin',
+                'paymentPassword'
+              ])
+            && request.resource.data.cardId == resource.data.cardId
+            && request.resource.data.vehicleId == vehicleId
+            && request.resource.data.vehicleModel
+              == get(
+                /databases/$(database)/documents/vehicles/$(vehicleId)
+              ).data.model
+            && request.resource.data.vehicleRegistrationNumber
+              == get(
+                /databases/$(database)/documents/vehicles/$(vehicleId)
+              ).data.registrationNumber
+            && request.resource.data.vehicleVin
+              == get(
+                /databases/$(database)/documents/vehicles/$(vehicleId)
+              ).data.vin
+            && request.resource.data.balance == resource.data.balance
+            && request.resource.data.status == resource.data.status
+            && request.resource.data.currency == resource.data.currency
+            && request.resource.data.registeredAt == resource.data.registeredAt
+            && request.resource.data.cardType is string
+            && request.resource.data.cardType.size() > 0
+            && request.resource.data.maskedCardNumber is string
+            && request.resource.data.maskedCardNumber.matches(
+              '^XXXX XXXX XXXX [A-Za-z0-9]{4}$'
+            )
+            && request.resource.data.cardHolderName is string
+            && request.resource.data.cardHolderName.size() > 0
+            && request.resource.data.expiryDate is timestamp
+            && request.resource.data.updatedAt is timestamp
+            && !request.resource.data.keys().hasAny([
+              'cardNumber', 'cvv', 'pin', 'paymentPassword'
+            ]);
+          allow delete: if false;
+
+          match /transactions/{transactionId} {
+            allow read: if userOwnsVehicle(uid, vehicleId)
+              && cardId == 'current'
+              && exists(
+                /databases/$(database)/documents/users/$(uid)/vehicles/$(vehicleId)/chargingCard/current
+              );
+            allow write: if false;
+          }
         }
       }
 
       match /chargingCard/{cardId} {
-        allow read: if ownsUser(uid);
-        allow write: if false;
+        allow read, write: if false;
 
         match /transactions/{transactionId} {
-          allow read: if ownsUser(uid);
-          allow write: if false;
+          allow read, write: if false;
         }
       }
     }
@@ -222,9 +267,22 @@ service cloud.firestore {
         allow read, create, update: if ownsVehicle(vehicleId);
         allow delete: if false;
       }
+
+      match /chargingCard/{cardId} {
+        allow read, write: if false;
+
+        match /transactions/{transactionId} {
+          allow read, write: if false;
+        }
+      }
+
     }
 
     match /vehicleClaims/{vehicleId} {
+      allow read, write: if false;
+    }
+
+    match /chargingSessions/{sessionId} {
       allow read, write: if false;
     }
   }
