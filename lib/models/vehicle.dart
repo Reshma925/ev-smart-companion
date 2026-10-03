@@ -12,11 +12,12 @@ class Vehicle {
     this.isActive = false,
     this.batteryCapacityKwh,
     this.batteryPercentage,
-    this.estimatedRangeKm,
+    double? maximumRangeKm,
+    double? estimatedRangeKm,
     this.health,
     this.connectorType = '',
     this.createdAt,
-  });
+  }) : maximumRangeKm = maximumRangeKm ?? estimatedRangeKm;
 
   final String id;
   final String model;
@@ -28,13 +29,13 @@ class Vehicle {
   final bool isActive;
   final double? batteryCapacityKwh;
   final double? batteryPercentage;
-  final double? estimatedRangeKm;
+  final double? maximumRangeKm;
   final double? health;
   final String connectorType;
   final DateTime? createdAt;
 
-  double? get estimatedRange => estimatedRangeKm;
-  double? get maximumRangeKm => estimatedRangeKm;
+  double? get estimatedRangeKm => maximumRangeKm;
+  double? get estimatedRange => maximumRangeKm;
 
   Map<String, dynamic> toMap() => {
     'model': model,
@@ -68,7 +69,7 @@ class Vehicle {
           map['batteryPercentage'],
           map['battery'],
         ]),
-        estimatedRangeKm: _firstDouble([
+        maximumRangeKm: _firstDouble([
           map['maximumRangeKm'],
           map['maxRangeKm'],
           map['estimatedRangeKm'],

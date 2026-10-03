@@ -104,7 +104,7 @@ void main() {
         registrationNumber: 'TN01AB1234',
         ownerName: 'Registered Vehicle Owner 1',
         vin: 'EVVIN001',
-        estimatedRangeKm: 420,
+        maximumRangeKm: 420,
         batteryCapacityKwh: 72,
         connectorType: 'CCS2',
       );
@@ -116,4 +116,14 @@ void main() {
       expect(map.containsKey('estimatedRange'), isFalse);
     },
   );
+
+  test('keeps the rated range distinct from telemetry estimated range', () {
+    final vehicle = Vehicle.fromMap({
+      'model': 'EV Smart X1',
+      'maximumRangeKm': 283.8888888888889,
+    }, id: 'EV001');
+
+    expect(vehicle.maximumRangeKm, closeTo(283.8888888888889, 0.000001));
+    expect(vehicle.estimatedRangeKm, vehicle.maximumRangeKm);
+  });
 }

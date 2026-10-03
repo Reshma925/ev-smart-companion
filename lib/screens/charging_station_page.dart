@@ -95,10 +95,12 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         : EvRangeService.calculateUsableRange(estimatedRangeKm: range);
   }
 
+  double? get _searchRadiusKm => _estimatedRangeKm;
+
   bool get _canSearch => !_loadingStations && !_loadingRoute;
 
   List<ChargingStation> get _inRangeStations {
-    final rangeKm = _usableRangeKm;
+    final rangeKm = _searchRadiusKm;
     if (rangeKm == null) return const [];
     return _stations
         .where((station) => station.distanceKm <= rangeKm)
@@ -205,7 +207,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
             onError: (Object error) {
               debugPrint('Vehicle telemetry stream failed: $error');
               if (!mounted) return;
-              final previousRange = _usableRangeKm;
+              final previousRange = _searchRadiusKm;
               final fallback = _validBattery(_vehicle?.batteryPercentage);
               setState(() {
                 _loadingTelemetry = false;
@@ -282,7 +284,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       return;
     }
 
-    final oldRange = _usableRangeKm;
+    final oldRange = _searchRadiusKm;
     setState(() {
       _vehicle = vehicle;
       _maximumRangeKm = _validMaximumRange(vehicle.maximumRangeKm);
@@ -294,7 +296,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       }
       _updateRangeMessages();
     });
-    final updatedRange = _usableRangeKm;
+    final updatedRange = _searchRadiusKm;
     if (updatedRange != null && updatedRange != oldRange && _mapReady) {
       _fitRange(updatedRange);
     }
@@ -303,7 +305,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
 
   void _onBatteryPercentage(double? batteryPercentage) {
     if (!mounted) return;
-    final oldRange = _usableRangeKm;
+    final oldRange = _searchRadiusKm;
     if (batteryPercentage == null) {
       final fallback = _validBattery(_vehicle?.batteryPercentage);
       setState(() {
@@ -341,7 +343,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       _batterySourceNotice = null;
       _updateRangeMessages();
     });
-    final range = _usableRangeKm;
+    final range = _searchRadiusKm;
     if (range != null && range != oldRange && _mapReady) {
       _fitRange(range);
     }
@@ -379,7 +381,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
 
   void _invalidateSearchResultsIfRangeChanged(double? previousRangeKm) {
     if (!_hasSearched) return;
-    final currentRangeKm = _usableRangeKm;
+    final currentRangeKm = _searchRadiusKm;
     final rangeChanged =
         previousRangeKm == null ||
         currentRangeKm == null ||
@@ -446,7 +448,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
           );
         }
       }
-      final range = _usableRangeKm;
+      final range = _searchRadiusKm;
       if (range != null && _mapReady && !_hasSearched) _fitRange(range);
     } catch (error, stackTrace) {
       debugPrint('Could not determine current location: $error\n$stackTrace');
@@ -524,7 +526,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         ? storedBattery
         : validLiveBattery;
     if (!mounted) return;
-    final previousRange = _usableRangeKm;
+    final previousRange = _searchRadiusKm;
     setState(() {
       _vehicle = vehicle;
       _maximumRangeKm = _validMaximumRange(vehicle.maximumRangeKm);
@@ -565,7 +567,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       await _reloadVehicleDataFromFirestore();
       if (!mounted) return;
       final location = _userLocation!;
-      final rangeKm = _usableRangeKm;
+      final rangeKm = _searchRadiusKm;
       if (rangeKm == null) {
         setState(() {
           _loadingStations = false;
@@ -856,7 +858,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   @override
   Widget build(BuildContext context) {
     final rangeKm = _estimatedRangeKm;
-    final usableRangeKm = _usableRangeKm;
+    final searchRadiusKm = _searchRadiusKm;
     final location = _userLocation;
     return Scaffold(
       backgroundColor: const Color(0xFFF4F7FA),
@@ -887,7 +889,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
           _RangeSummary(
             battery: _batteryPercentage,
             rangeKm: rangeKm,
-            searchRadiusKm: usableRangeKm,
+            searchRadiusKm: searchRadiusKm,
             unit: _distanceUnit,
             loading: _loadingVehicle || _loadingTelemetry,
             message: _vehicleMessage ?? _batterySourceNotice,
@@ -1034,7 +1036,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
                       padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(22),
-                        child: _buildMap(location, usableRangeKm),
+                        child: _buildMap(location, searchRadiusKm),
                       ),
                     ),
                   ),
