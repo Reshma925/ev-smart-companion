@@ -56,9 +56,10 @@ vehicle identity writes, and scope telemetry to the mapped owner. Keep admin
 vehicle provisioning in Firebase Console or a trusted server environment.
 
 The current Bluetooth page is a UI preview, not a BLE implementation. It
-displays the selected Firestore vehicle's Bluetooth identifiers; the dashboard
-simulator writes telemetry beneath that vehicle's `telemetry/live` document.
-This does not advertise or connect to a physical/simulated BLE peripheral.
+displays the selected Firestore vehicle's Bluetooth identifiers; it does not
+advertise or connect to a physical or simulated BLE peripheral. Vehicle Health
+uses the existing `telemetry/live` document and vehicle maintenance records.
+It does not simulate charging or fabricate driving history.
 
 A new Flutter project.
 

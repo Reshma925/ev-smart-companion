@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../models/charging_card.dart';
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
+import '../models/vehicle_health.dart';
 import '../models/vehicle_telemetry.dart';
 
 class FirestoreService {
@@ -1000,38 +1001,60 @@ class FirestoreService {
         return Vehicle.fromMap(snapshot.data()!, id: snapshot.id);
       });
 
-  Stream<VehicleData?> watchVehicleTelemetry(String vehicleId) => _firestore
-      .collection('vehicles')
-      .doc(vehicleId)
-      .collection('telemetry')
-      .doc('live')
-      .snapshots()
-      .map((snapshot) {
-        final data = snapshot.data();
-        if (data == null ||
-            (data['battery'] ?? data['batteryPercentage']) is! num ||
-            data['range'] is! num ||
-            data['batteryHealth'] is! num ||
-            data['healthScore'] is! num ||
-            data['isCharging'] is! bool) {
-          return null;
-        }
-        return VehicleData.fromMap(data);
-      });
+  Stream<VehicleData?> watchVehicleTelemetry(String vehicleId) {
+    return _firestore
+        .collection('vehicles')
+        .doc(vehicleId)
+        .collection('telemetry')
+        .doc('live')
+        .snapshots()
+        .map((snapshot) {
+          final data = snapshot.data();
+          if (data == null ||
+              (data['battery'] ?? data['batteryPercentage']) is! num ||
+              data['range'] is! num ||
+              data['batteryHealth'] is! num ||
+              data['healthScore'] is! num ||
+              data['isCharging'] is! bool) {
+            return null;
+          }
+          return VehicleData.fromMap(data);
+        });
+  }
 
-  Stream<double?> watchVehicleBatteryPercentage(String vehicleId) => _firestore
+  Stream<double?> watchVehicleBatteryPercentage(String vehicleId) {
+    return _firestore
+        .collection('vehicles')
+        .doc(vehicleId)
+        .collection('telemetry')
+        .doc('live')
+        .snapshots()
+        .map(
+          (snapshot) => _firstFiniteNumber([
+            snapshot.data()?['battery'],
+            snapshot.data()?['batteryPercentage'],
+          ]),
+        );
+  }
+
+  Stream<List<VehicleMaintenanceRecord>> watchVehicleMaintenanceRecords(
+    String vehicleId,
+  ) => _firestore
       .collection('vehicles')
       .doc(vehicleId)
-      .collection('telemetry')
-      .doc('live')
+      .collection('maintenance')
+      .orderBy('serviceDate', descending: true)
       .snapshots()
-      .map((snapshot) {
-        final data = snapshot.data();
-        return _firstFiniteNumber([
-          data?['battery'],
-          data?['batteryPercentage'],
-        ]);
-      });
+      .map(
+        (snapshot) => snapshot.docs
+            .map(
+              (document) => VehicleMaintenanceRecord.fromMap(
+                document.data(),
+                id: document.id,
+              ),
+            )
+            .toList(growable: false),
+      );
 
   Future<double?> getVehicleBatteryPercentage(String vehicleId) async {
     final snapshot = await _firestore
