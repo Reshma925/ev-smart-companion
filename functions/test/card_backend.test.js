@@ -164,6 +164,49 @@ test("users can read their own vehicle card but not another user's card", async 
   await assertFails(getDoc(doc(aliceDb, "vehicleClaims/EV001")));
 });
 
+test("vehicle owners can create and read maintenance records only for their vehicles", async () => {
+  await seedLinkedVehicles();
+  const aliceDb = testEnvironment.authenticatedContext("alice").firestore();
+  const record = {
+    vehicleId: "EV001",
+    serviceType: "Brake inspection",
+    category: "Brakes",
+    serviceDate: ClientTimestamp.fromDate(new Date("2026-09-12T00:00:00Z")),
+    nextServiceDate: ClientTimestamp.fromDate(new Date("2027-09-12T00:00:00Z")),
+    odometerKm: 24860,
+    cost: 3200,
+    serviceCenter: "EV Service Centre",
+    notes: "Inspection completed",
+    status: "Completed",
+    source: "user_entered",
+    createdAt: ClientTimestamp.now(),
+    updatedAt: ClientTimestamp.now(),
+  };
+
+  await assertSucceeds(
+    setDoc(doc(aliceDb, "vehicles/EV001/maintenance/brake-check"), record),
+  );
+  const snapshot = await assertSucceeds(
+    getDoc(doc(aliceDb, "vehicles/EV001/maintenance/brake-check")),
+  );
+  assert.equal(snapshot.data().cost, 3200);
+  await assertFails(
+    getDoc(doc(aliceDb, "vehicles/EV003/maintenance/brake-check")),
+  );
+  await assertFails(
+    setDoc(doc(aliceDb, "vehicles/EV003/maintenance/not-owned"), {
+      ...record,
+      vehicleId: "EV003",
+    }),
+  );
+  await assertFails(
+    setDoc(doc(aliceDb, "vehicles/EV001/maintenance/invalid"), {
+      ...record,
+      cost: "3200",
+    }),
+  );
+});
+
 test("an owner can read a missing card document to display the empty state", async () => {
   await seedLinkedVehicles();
   await adminDb.doc(cardPath("alice", "EV001")).delete();

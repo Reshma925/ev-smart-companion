@@ -133,8 +133,11 @@ class VehicleMaintenanceRecord {
     required this.id,
     required this.serviceType,
     required this.status,
+    this.category,
     this.serviceDate,
     this.nextServiceDate,
+    this.odometerKm,
+    this.cost,
     this.serviceCenter,
     this.notes,
   });
@@ -142,8 +145,11 @@ class VehicleMaintenanceRecord {
   final String id;
   final String serviceType;
   final String status;
+  final String? category;
   final DateTime? serviceDate;
   final DateTime? nextServiceDate;
+  final double? odometerKm;
+  final double? cost;
   final String? serviceCenter;
   final String? notes;
 
@@ -154,11 +160,23 @@ class VehicleMaintenanceRecord {
     id: id,
     serviceType: map['serviceType'] as String? ?? 'Service',
     status: map['status'] as String? ?? 'Completed',
+    category: map['category'] as String?,
     serviceDate: _date(map['serviceDate']),
     nextServiceDate: _date(map['nextServiceDate']),
+    odometerKm: _number(map['odometerKm'] ?? map['odometer']),
+    cost: _number(map['cost']),
     serviceCenter: map['serviceCenter'] as String?,
     notes: map['notes'] as String?,
   );
+
+  static double? _number(Object? value) {
+    final number = switch (value) {
+      num() => value.toDouble(),
+      String() => double.tryParse(value),
+      _ => null,
+    };
+    return number != null && number.isFinite ? number : null;
+  }
 
   static DateTime? _date(Object? value) => switch (value) {
     Timestamp() => value.toDate(),

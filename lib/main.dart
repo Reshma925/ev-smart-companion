@@ -1,4 +1,6 @@
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
@@ -8,6 +10,16 @@ import 'screens/auth_gate.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  if (kDebugMode) {
+    final emulatorHost = kIsWeb
+        ? '127.0.0.1'
+        : switch (defaultTargetPlatform) {
+            TargetPlatform.android => '10.0.2.2',
+            _ => '127.0.0.1',
+          };
+    FirebaseFunctions.instance.useFunctionsEmulator(emulatorHost, 5001);
+    debugPrint('[Firebase DEBUG] Functions emulator: $emulatorHost:5001');
+  }
   runApp(const EVSmartCompanionApp());
 }
 

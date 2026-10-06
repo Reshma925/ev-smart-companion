@@ -73,10 +73,17 @@ exports.setConnectedVehicle = onCall(async (request) => {
 exports.askEvLearningAssistant = onCall(
   { secrets: [geminiApiKey], timeoutSeconds: 35 },
   async (request) => {
+    console.info("[AI DEBUG] Function called: askEvLearningAssistant");
+    const apiKey = geminiApiKey.value();
+    if (apiKey) {
+      console.info("[GEMINI DEBUG] GEMINI_API_KEY is available to function.");
+    } else {
+      console.error("[GEMINI ERROR] Missing GEMINI_API_KEY in function environment.");
+    }
     console.info("[AI DEBUG] Request started at Firebase callable");
     console.info("[AI DEBUG] Provider: Google Gemini");
     console.info("[AI DEBUG] Endpoint: askEvLearningAssistant Firebase callable");
-    console.info("[AI DEBUG] Request model: gemini-2.5-flash");
+    console.info("[AI DEBUG] Request model: gemini-flash-latest");
     if (!request.auth?.uid) {
       const error = new HttpsError(
         "unauthenticated",
@@ -94,7 +101,7 @@ exports.askEvLearningAssistant = onCall(
         message: request.data?.message,
         topic: request.data?.topic,
         context: request.data?.context,
-        apiKey: geminiApiKey.value(),
+        apiKey,
       });
       return { success: true, answer };
     } catch (error) {

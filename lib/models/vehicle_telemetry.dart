@@ -34,6 +34,7 @@ class VehicleData {
     this.regenerativeEnergyKwh,
     this.lastTripDistanceKm,
     this.lastTripEnergyKwh,
+    this.odometerKm,
   });
 
   final double battery;
@@ -68,6 +69,7 @@ class VehicleData {
   final double? regenerativeEnergyKwh;
   final double? lastTripDistanceKm;
   final double? lastTripEnergyKwh;
+  final double? odometerKm;
 
   factory VehicleData.fromMap(Map<String, dynamic> map) {
     return VehicleData(
@@ -105,6 +107,7 @@ class VehicleData {
       regenerativeEnergyKwh: _optionalNumber(map['regenerativeEnergyKwh']),
       lastTripDistanceKm: _optionalNumber(map['lastTripDistanceKm']),
       lastTripEnergyKwh: _optionalNumber(map['lastTripEnergyKwh']),
+      odometerKm: _optionalNumber(map['odometerKm'] ?? map['odometer']),
     );
   }
 

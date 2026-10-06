@@ -1,8 +1,7 @@
 const MAX_QUESTION_LENGTH = 2000;
 const PROVIDER = "Google Gemini";
-const MODEL = "gemini-2.5-flash";
-const ENDPOINT =
-  `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+const MODEL = "gemini-flash-latest";
+const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
 
 function redact(value, apiKey) {
   const text = String(value ?? "");
@@ -101,38 +100,32 @@ async function askLearningAssistant({
   if (!apiKey) {
     const error = new Error("Learning assistant is not configured.");
     error.code = "failed-precondition";
+    console.error("[GEMINI ERROR] Missing GEMINI_API_KEY.");
     logAiError(error);
     throw error;
   }
+  console.info("[GEMINI DEBUG] GEMINI_API_KEY is available to backend.");
 
-  const contents = [{
-    role: "user",
-    parts: [{
-      text: [
-        `Learning topic: ${normalizedTopic}`,
-        normalizedContext ? `Learning context: ${normalizedContext}` : "",
-        `Learner question: ${normalizedQuestion}`,
-      ].filter(Boolean).join("\n\n"),
-    }],
-  }];
-  const systemInstruction = {
-    parts: [{
-      text: [
-        "You are an educational tutor for electric-vehicle owners.",
-        "Explain EV concepts clearly, progressively, and in simple language when appropriate.",
-        "Help learners understand EV technology, charging, batteries, motors, regenerative braking, range, charging standards, and basic EV maintenance.",
-        "Use practical examples when helpful.",
-        "Do not diagnose vehicle faults, control a vehicle, change settings, initiate charging, or perform maintenance actions.",
-        "Do not provide unsafe instructions. For warning lights or possible faults, direct the learner to the vehicle manual and qualified support.",
-        "Do not claim access to private information or live vehicle data beyond context explicitly supplied in this request.",
-      ].join(" "),
-    }],
-  };
+  const userPrompt = [
+    `Learning topic: ${normalizedTopic}`,
+    normalizedContext ? `Learning context: ${normalizedContext}` : "",
+    `Learner question: ${normalizedQuestion}`,
+  ].filter(Boolean).join("\n\n");
 
-  console.info("[AI DEBUG] Request started");
-  console.info("[AI DEBUG] Provider:", PROVIDER);
-  console.info("[AI DEBUG] Endpoint:", ENDPOINT);
-  console.info("[AI DEBUG] Request model:", MODEL);
+  const systemInstruction = [
+    "You are EV Smart Companion Assistant, an educational tutor for electric-vehicle owners.",
+    "Explain EV concepts clearly, progressively, and in simple language when appropriate.",
+    "Help learners understand EV batteries and health, charging, motors, regenerative braking, range, energy consumption, driving efficiency, tire pressure, brakes, and EV maintenance concepts.",
+    "Use practical examples when helpful.",
+    "Do not diagnose vehicle faults, control a vehicle, change settings, initiate charging, or perform maintenance actions.",
+    "Do not provide unsafe instructions or high-voltage repair guidance. For warning lights or possible faults, direct the learner to the vehicle manual and qualified support.",
+    "Do not claim access to private information or live vehicle data beyond context explicitly supplied in this request.",
+  ].join(" ");
+
+  console.info("[GEMINI DEBUG] Request started");
+  console.info("[GEMINI DEBUG] Provider:", PROVIDER);
+  console.info("[GEMINI DEBUG] Endpoint:", ENDPOINT);
+  console.info("[GEMINI DEBUG] Request model:", MODEL);
 
   let response;
   try {
@@ -143,16 +136,18 @@ async function askLearningAssistant({
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify({
-        contents,
-        systemInstruction,
-        generationConfig: {
+        model: MODEL,
+        input: userPrompt,
+        system_instruction: systemInstruction,
+        generation_config: {
           temperature: 0.3,
-          maxOutputTokens: 700,
+          max_output_tokens: 700,
         },
+        store: false,
       }),
       signal: AbortSignal.timeout(25000),
     });
-    console.info("[AI DEBUG] Request started successfully");
+    console.info("[GEMINI DEBUG] Provider request sent");
     response = await providerRequest;
   } catch (cause) {
     const error = new Error("Learning assistant provider request failed.", {
@@ -163,8 +158,8 @@ async function askLearningAssistant({
     throw error;
   }
 
-  console.info("[AI DEBUG] HTTP status:", response.status);
-  console.info("[AI DEBUG] Response received");
+  console.info("[GEMINI DEBUG] HTTP status:", response.status);
+  console.info("[GEMINI DEBUG] Response received");
 
   let responseBody;
   try {
@@ -188,6 +183,7 @@ async function askLearningAssistant({
       response.status === 429 || response.status >= 500
         ? "unavailable"
         : "internal";
+    console.error("[GEMINI ERROR] API request failed.");
     logAiError(error, {
       apiKey,
       httpStatus: response.status,
@@ -198,7 +194,7 @@ async function askLearningAssistant({
 
   let payload;
   try {
-    console.info("[AI DEBUG] Response parsing started");
+    console.info("[GEMINI DEBUG] Response parsing started");
     payload = JSON.parse(responseBody);
   } catch (cause) {
     const error = new Error("Learning assistant returned an invalid response.", {
@@ -214,11 +210,18 @@ async function askLearningAssistant({
     throw error;
   }
 
-  const answer = payload?.candidates?.[0]?.content?.parts
-    ?.map((part) => (typeof part?.text === "string" ? part.text.trim() : ""))
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+  const outputParts = (Array.isArray(payload?.steps) ? payload.steps : [])
+    .filter((step) => step?.type === "model_output")
+    .flatMap((step) => (Array.isArray(step.content) ? step.content : []))
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text.trim())
+    .filter(Boolean);
+  const answer = (
+    typeof payload?.output_text === "string"
+      ? payload.output_text
+      : outputParts?.join("\n") || ""
+  ).trim();
+
   if (!answer) {
     const error = new Error("Learning assistant returned an empty response.");
     error.code = "unavailable";
@@ -229,7 +232,7 @@ async function askLearningAssistant({
     });
     throw error;
   }
-  console.info("[AI DEBUG] Response parsing succeeded");
+  console.info("[GEMINI DEBUG] Response parsing succeeded");
   return answer;
 }
 

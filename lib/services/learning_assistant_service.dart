@@ -66,13 +66,10 @@ class FirebaseLearningAssistantService implements EvLearningAssistant {
     }
 
     try {
-      final endpoint =
-          'https://us-central1-${_functions.app.options.projectId}.'
-          'cloudfunctions.net/askEvLearningAssistant';
       debugPrint('[AI DEBUG] Request started');
       debugPrint('[AI DEBUG] Provider: Google Gemini via Firebase callable');
-      debugPrint('[AI DEBUG] Endpoint: $endpoint');
-      debugPrint('[AI DEBUG] Request model: gemini-2.5-flash');
+      debugPrint('[AI DEBUG] Callable: askEvLearningAssistant');
+      debugPrint('[AI DEBUG] Request model: gemini-flash-latest');
       final callable = _functions.httpsCallable('askEvLearningAssistant');
       final contextData = context.toMap();
       final requestData = <String, Object>{

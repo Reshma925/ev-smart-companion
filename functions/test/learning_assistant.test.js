@@ -51,15 +51,10 @@ test("uses the secure provider key and required message/topic/context contract",
         status: 200,
         text: async () =>
           JSON.stringify({
-            candidates: [
-              {
-                content: {
-                  parts: [
-                    { text: "Range estimates change with conditions." },
-                  ],
-                },
-              },
-            ],
+            steps: [{
+              type: "model_output",
+              content: [{ type: "text", text: "Range estimates change with conditions." }],
+            }],
           }),
       };
     },
@@ -69,14 +64,13 @@ test("uses the secure provider key and required message/topic/context contract",
   assert.equal(request.options.headers["x-goog-api-key"], "test-secret");
   assert.equal(request.url.includes("test-secret"), false);
   const requestBody = JSON.parse(request.options.body);
-  assert.equal(requestBody.systemInstruction.parts.length, 1);
-  const prompt = requestBody.contents[0].parts[0].text;
+  assert.equal(requestBody.model, "gemini-flash-latest");
+  assert.equal(requestBody.store, false);
+  assert.match(requestBody.system_instruction, /EV Smart Companion Assistant/);
+  const prompt = requestBody.input;
   assert.match(prompt, /Learning topic: Battery and range/);
   assert.match(prompt, /batteryPercentage":54/);
-  assert.match(
-    requestBody.systemInstruction.parts[0].text,
-    /educational tutor for electric-vehicle owners/i,
-  );
+  assert.match(requestBody.system_instruction, /educational tutor for electric-vehicle owners/i);
 });
 
 test("sends a basic question without vehicle context and parses Gemini output", async () => {
@@ -91,19 +85,13 @@ test("sends a basic question without vehicle context and parses Gemini output", 
         status: 200,
         text: async () =>
           JSON.stringify({
-            candidates: [
-              {
-                content: {
-                  parts: [{ text: "Regenerative braking recovers energy." }],
-                },
-              },
-            ],
+            output_text: "Regenerative braking recovers energy.",
           }),
       };
     },
   });
 
-  const prompt = JSON.parse(request.options.body).contents[0].parts[0].text;
+  const prompt = JSON.parse(request.options.body).input;
   assert.equal(answer, "Regenerative braking recovers energy.");
   assert.match(prompt, /Explain regenerative braking in one short paragraph/);
   assert.doesNotMatch(prompt, /Learning context:/);
@@ -144,6 +132,22 @@ test("logs provider error details without logging the API key", async () => {
 });
 
 test("reports provider failures and invalid output with safe error codes", async () => {
+  const missingKeyLogs = [];
+  const originalError = console.error;
+  console.error = (...values) => missingKeyLogs.push(values.join(" "));
+  try {
+    await assert.rejects(
+      askLearningAssistant({
+        message: "What is AC charging?",
+        apiKey: "",
+      }),
+      (error) => error.code === "failed-precondition",
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assert.match(missingKeyLogs.join("\n"), /Missing GEMINI_API_KEY/);
+
   await assert.rejects(
     askLearningAssistant({
       message: "What is AC charging?",
@@ -164,7 +168,7 @@ test("reports provider failures and invalid output with safe error codes", async
       fetchImpl: async () => ({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ candidates: [] }),
+        text: async () => JSON.stringify({ steps: { unexpected: true } }),
       }),
     }),
     (error) => error.code === "unavailable",
@@ -172,8 +176,23 @@ test("reports provider failures and invalid output with safe error codes", async
   await assert.rejects(
     askLearningAssistant({
       message: "What is AC charging?",
-      apiKey: "",
+      apiKey: "test-secret",
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => "not json",
+      }),
     }),
-    (error) => error.code === "failed-precondition",
+    (error) => error.code === "internal",
+  );
+  await assert.rejects(
+    askLearningAssistant({
+      message: "What is AC charging?",
+      apiKey: "test-secret",
+      fetchImpl: async () => {
+        throw new Error("network unavailable");
+      },
+    }),
+    (error) => error.code === "unavailable",
   );
 });

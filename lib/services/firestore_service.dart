@@ -1045,6 +1045,28 @@ class FirestoreService {
       .collection('maintenance')
       .orderBy('serviceDate', descending: true)
       .snapshots()
+      .handleError((Object error, StackTrace stackTrace) {
+        if (kDebugMode) {
+          final projectId = _firestore.app.options.projectId;
+          if (error is FirebaseException) {
+            debugPrint(
+              '[Maintenance Firestore] Read failed '
+              'project=$projectId '
+              'path=vehicles/$vehicleId/maintenance '
+              'code=${error.code} '
+              'message=${error.message ?? '(no message)'}',
+            );
+          } else {
+            debugPrint(
+              '[Maintenance Firestore] Read failed '
+              'project=$projectId '
+              'path=vehicles/$vehicleId/maintenance '
+              'errorType=${error.runtimeType}',
+            );
+          }
+        }
+        Error.throwWithStackTrace(error, stackTrace);
+      })
       .map(
         (snapshot) => snapshot.docs
             .map(
@@ -1055,6 +1077,52 @@ class FirestoreService {
             )
             .toList(growable: false),
       );
+
+  Future<void> addVehicleMaintenanceRecord({
+    required String vehicleId,
+    required String serviceType,
+    required String category,
+    required DateTime serviceDate,
+    DateTime? nextServiceDate,
+    double? odometerKm,
+    double? cost,
+    String? serviceCenter,
+    String? notes,
+  }) async {
+    final normalizedVehicleId = vehicleId.trim();
+    final normalizedServiceType = serviceType.trim();
+    if (normalizedVehicleId.isEmpty || normalizedServiceType.isEmpty) {
+      throw ArgumentError('Vehicle and service type are required.');
+    }
+    if (odometerKm != null && (!odometerKm.isFinite || odometerKm < 0)) {
+      throw ArgumentError.value(odometerKm, 'odometerKm');
+    }
+    if (cost != null && (!cost.isFinite || cost < 0)) {
+      throw ArgumentError.value(cost, 'cost');
+    }
+
+    await _firestore
+        .collection('vehicles')
+        .doc(normalizedVehicleId)
+        .collection('maintenance')
+        .add({
+          'vehicleId': normalizedVehicleId,
+          'serviceType': normalizedServiceType,
+          'category': category,
+          'serviceDate': Timestamp.fromDate(serviceDate),
+          'nextServiceDate': nextServiceDate == null
+              ? null
+              : Timestamp.fromDate(nextServiceDate),
+          'odometerKm': odometerKm,
+          'cost': cost,
+          'serviceCenter': serviceCenter?.trim() ?? '',
+          'notes': notes?.trim() ?? '',
+          'status': 'Completed',
+          'source': 'user_entered',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+  }
 
   Future<double?> getVehicleBatteryPercentage(String vehicleId) async {
     final snapshot = await _firestore

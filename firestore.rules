@@ -268,6 +268,47 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      match /maintenance/{recordId} {
+        allow read: if ownsVehicle(vehicleId);
+        allow create: if ownsVehicle(vehicleId)
+          && request.resource.data.vehicleId == vehicleId
+          && request.resource.data.serviceType is string
+          && request.resource.data.serviceType.size() > 0
+          && request.resource.data.category is string
+          && request.resource.data.serviceDate is timestamp
+          && (
+            !request.resource.data.keys().hasAny(['nextServiceDate'])
+            || request.resource.data.nextServiceDate == null
+            || request.resource.data.nextServiceDate is timestamp
+          )
+          && (
+            !request.resource.data.keys().hasAny(['odometerKm'])
+            || request.resource.data.odometerKm == null
+            || (
+              request.resource.data.odometerKm is number
+              && request.resource.data.odometerKm >= 0
+            )
+          )
+          && (
+            !request.resource.data.keys().hasAny(['cost'])
+            || request.resource.data.cost == null
+            || (
+              request.resource.data.cost is number
+              && request.resource.data.cost >= 0
+            )
+          )
+          && request.resource.data.status == 'Completed'
+          && request.resource.data.source == 'user_entered'
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.updatedAt is timestamp
+          && request.resource.data.keys().hasOnly([
+            'vehicleId', 'serviceType', 'category', 'serviceDate',
+            'nextServiceDate', 'odometerKm', 'cost', 'serviceCenter',
+            'notes', 'status', 'source', 'createdAt', 'updatedAt'
+          ]);
+        allow update, delete: if false;
+      }
+
       match /chargingCard/{cardId} {
         allow read, write: if false;
 
