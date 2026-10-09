@@ -18,6 +18,7 @@ class VehicleData {
     this.motorLoadPercent,
     this.motorRpm,
     this.motorOperatingHours,
+    this.rangeImpact,
     this.frontBrakePadLifePercent,
     this.rearBrakePadLifePercent,
     this.brakeFluidStatus,
@@ -60,6 +61,7 @@ class VehicleData {
   final double? motorLoadPercent;
   final int? motorRpm;
   final double? motorOperatingHours;
+  final Map<String, double>? rangeImpact;
   final double? frontBrakePadLifePercent;
   final double? rearBrakePadLifePercent;
   final String? brakeFluidStatus;
@@ -109,6 +111,7 @@ class VehicleData {
       motorLoadPercent: _optionalNumber(map['motorLoadPercent']),
       motorRpm: _optionalInteger(map['motorRpm']),
       motorOperatingHours: _optionalNumber(map['motorOperatingHours']),
+      rangeImpact: _optionalNumberMap(map['rangeImpact']),
       frontBrakePadLifePercent: _optionalNumber(map['frontBrakePadLifePercent']),
       rearBrakePadLifePercent: _optionalNumber(map['rearBrakePadLifePercent']),
       brakeFluidStatus: _optionalText(map['brakeFluidStatus']),
@@ -158,6 +161,17 @@ class VehicleData {
     if (value is num) return value.toInt();
     if (value is String) return int.tryParse(value) ?? 0;
     return 0;
+  }
+    static Map<String, double>? _optionalNumberMap(Object? value) {
+    if (value is! Map) return null;
+    final result = <String, double>{};
+    value.forEach((key, raw) {
+      final number = _optionalNumber(raw);
+      if (key is String && number != null && number >= 0) {
+        result[key] = number;
+      }
+    });
+    return result.isEmpty ? null : result;
   }
     static String? _optionalText(Object? value) {
     if (value is! String) return null;

@@ -146,7 +146,7 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                               wide: wide,
                             ),
                             const SizedBox(height: 25),
-                            const _RangeImpactSection(),
+                                                        _RangeImpactSection(telemetry: telemetry),
                             const SizedBox(height: 25),
                             const _TripEfficiencySection(),
                             const SizedBox(height: 25),
@@ -1156,28 +1156,94 @@ class _DrivingEfficiencySection extends StatelessWidget {
 }
 
 class _RangeImpactSection extends StatelessWidget {
-  const _RangeImpactSection();
+  const _RangeImpactSection({required this.telemetry});
+
+  final VehicleData? telemetry;
+
+  static const _labels = {
+    'driving': 'Driving',
+    'climate': 'Climate control',
+    'speed': 'High speed',
+    'elevation': 'Elevation',
+    'accessories': 'Accessories',
+  };
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const _SectionHeading(
-        eyebrow: 'RANGE IMPACT',
-        title: 'What is affecting your range?',
-        subtitle: 'Energy-use breakdown from recent vehicle data.',
-      ),
-      const SizedBox(height: 11),
-      const _Panel(
-        child: _NoDataMessage(
-          icon: Icons.donut_large_rounded,
-          message:
-              'Range-impact breakdown is not available because the vehicle '
-              'does not report energy use by cause yet.',
+  Widget build(BuildContext context) {
+    final impact = telemetry?.rangeImpact;
+    final total =
+        impact?.values.fold<double>(0, (sum, value) => sum + value) ?? 0;
+    final entries = impact == null || total <= 0
+        ? const <MapEntry<String, double>>[]
+        : (impact.entries.toList()
+            ..sort((a, b) => b.value.compareTo(a.value)));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeading(
+          eyebrow: 'RANGE IMPACT',
+          title: 'What is affecting your range?',
+          subtitle: 'Energy-use breakdown from recent vehicle data.',
         ),
-      ),
-    ],
-  );
+        const SizedBox(height: 11),
+        _Panel(
+          child: entries.isEmpty
+              ? const _NoDataMessage(
+                  icon: Icons.donut_large_rounded,
+                  message:
+                      'Range-impact breakdown is not available because the '
+                      'vehicle does not report energy use by cause yet.',
+                )
+              : Column(
+                  children: [
+                    for (final entry in entries)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    _labels[entry.key] ?? entry.key,
+                                    style: const TextStyle(
+                                      color: _ink,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  '${(entry.value / total * 100).round()}%',
+                                  style: const TextStyle(
+                                    color: _ink,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(99),
+                              child: LinearProgressIndicator(
+                                value: entry.value / total,
+                                minHeight: 8,
+                                backgroundColor: const Color(0xFFEAF0F4),
+                                valueColor:
+                                    const AlwaysStoppedAnimation(_blue),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
 }
 
 class _TripEfficiencySection extends StatelessWidget {
