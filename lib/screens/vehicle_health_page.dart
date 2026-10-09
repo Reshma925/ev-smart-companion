@@ -138,7 +138,7 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                             const SizedBox(height: 25),
                             _BrakeSection(health: health, telemetry: telemetry),
                             const SizedBox(height: 25),
-                            _SoftwareSection(health: health),
+                                       _SoftwareSection(health: health, telemetry: telemetry),
                             const SizedBox(height: 25),
                             _DrivingEfficiencySection(
                               health: health,
@@ -240,10 +240,10 @@ void _showComponentDetails(
     VehicleHealthComponent.motor => <(String, String)>[
       ('Health', _percent(score)),
       ('Temperature', _temperature(telemetry?.motorTemperatureC)),
-      ('Efficiency', 'Not reported'),
-      ('Current load', 'Not reported'),
-      ('RPM', 'Not reported'),
-      ('Operating hours', 'Not reported'),
+      ('Efficiency', _percent(telemetry?.motorEfficiencyPercent)),
+      ('Current load', _percent(telemetry?.motorLoadPercent)),
+      ('RPM', _quantity(telemetry?.motorRpm, unit: 'rpm')),
+      ('Operating hours', _quantity(telemetry?.motorOperatingHours, unit: 'h')),
     ],
     VehicleHealthComponent.tires => <(String, String)>[
       ('Health', _percent(score)),
@@ -267,9 +267,16 @@ void _showComponentDetails(
     ],
     VehicleHealthComponent.brakes => <(String, String)>[
       ('Health', _percent(score)),
-      ('Brake-pad life', 'Not reported'),
-      ('Brake fluid', 'Not reported'),
-      ('Brake temperature', 'Not reported'),
+            (
+        'Brake-pad life',
+        telemetry?.frontBrakePadLifePercent == null &&
+                telemetry?.rearBrakePadLifePercent == null
+            ? 'Not reported'
+            : 'Front ${_percent(telemetry?.frontBrakePadLifePercent)} · '
+                  'Rear ${_percent(telemetry?.rearBrakePadLifePercent)}',
+      ),
+      ('Brake fluid', telemetry?.brakeFluidStatus ?? 'Not reported'),
+      ('Brake temperature', _temperature(telemetry?.brakeTemperatureC)),
       ('Hard-braking events', _quantity(telemetry?.hardBrakingEvents)),
       (
         'Energy recovered',
@@ -277,11 +284,13 @@ void _showComponentDetails(
       ),
     ],
     VehicleHealthComponent.software => <(String, String)>[
-      ('Health', _percent(score)),
-      ('Vehicle software', 'Version not reported'),
-      ('Infotainment', 'Version not reported'),
-      ('Firmware', 'Version not reported'),
-      ('Security status', 'Not reported'),
+           (
+        'Vehicle software',
+        telemetry?.vehicleSoftwareVersion ?? 'Version not reported',
+      ),
+      ('Infotainment', telemetry?.infotainmentVersion ?? 'Version not reported'),
+      ('Firmware', telemetry?.firmwareVersion ?? 'Version not reported'),
+      ('Security status', telemetry?.securityStatus ?? 'Not reported'),
     ],
   };
 
@@ -735,9 +744,22 @@ class _MotorSection extends StatelessWidget {
               label: 'Temperature',
               value: _temperature(telemetry?.motorTemperatureC),
             ),
-            const _MetricChip(label: 'Efficiency', value: 'Not reported'),
-            const _MetricChip(label: 'Load / RPM', value: 'Not reported'),
-            const _MetricChip(label: 'Operating hours', value: 'Not reported'),
+                       _MetricChip(
+              label: 'Efficiency',
+              value: _percent(telemetry?.motorEfficiencyPercent),
+            ),
+            _MetricChip(
+              label: 'Load / RPM',
+              value: telemetry?.motorLoadPercent == null &&
+                      telemetry?.motorRpm == null
+                  ? 'Not reported'
+                  : '${_percent(telemetry?.motorLoadPercent)} · '
+                      '${_quantity(telemetry?.motorRpm, unit: 'rpm')}',
+            ),
+            _MetricChip(
+              label: 'Operating hours',
+              value: _quantity(telemetry?.motorOperatingHours, unit: 'h'),
+            ),
           ],
         ),
       ),
@@ -982,22 +1004,18 @@ class _BrakeSection extends StatelessWidget {
                 spacing: 9,
                 runSpacing: 9,
                 children: [
-                  const _MetricChip(
+                                   _MetricChip(
                     label: 'Front pad life',
-                    value: 'Not reported',
-                  ),
-                  const _MetricChip(
-                    label: 'Rear pad life',
-                    value: 'Not reported',
-                  ),
-                  const _MetricChip(
-                    label: 'Brake fluid',
-                    value: 'Not reported',
+                    value: _percent(telemetry?.frontBrakePadLifePercent),
                   ),
                   _MetricChip(
-                    label: 'Hard-braking events',
-                    value: _quantity(telemetry?.hardBrakingEvents),
+                    label: 'Rear pad life',
+                    value: _percent(telemetry?.rearBrakePadLifePercent),
                   ),
+                  _MetricChip(
+                    label: 'Brake fluid',
+                    value: telemetry?.brakeFluidStatus ?? 'Not reported',
+                  ), 
                 ],
               ),
               const SizedBox(height: 9),
@@ -1015,10 +1033,11 @@ class _BrakeSection extends StatelessWidget {
 }
 
 class _SoftwareSection extends StatelessWidget {
-  const _SoftwareSection({required this.health});
+  
+  const _SoftwareSection({required this.health, required this.telemetry});
 
   final VehicleHealthData? health;
-
+  final VehicleData? telemetry;
   @override
   Widget build(BuildContext context) {
     final score = health?.component(VehicleHealthComponent.software).score;
@@ -1036,13 +1055,22 @@ class _SoftwareSection extends StatelessWidget {
             runSpacing: 9,
             children: [
               _MetricChip(label: 'Health', value: _percent(score)),
-              const _MetricChip(
+                            _MetricChip(
                 label: 'Vehicle software',
-                value: 'Not reported',
+                value: telemetry?.vehicleSoftwareVersion ?? 'Not reported',
               ),
-              const _MetricChip(label: 'Infotainment', value: 'Not reported'),
-              const _MetricChip(label: 'Firmware', value: 'Not reported'),
-              const _MetricChip(label: 'Security', value: 'Not reported'),
+              _MetricChip(
+                label: 'Infotainment',
+                value: telemetry?.infotainmentVersion ?? 'Not reported',
+              ),
+              _MetricChip(
+                label: 'Firmware',
+                value: telemetry?.firmwareVersion ?? 'Not reported',
+              ),
+              _MetricChip(
+                label: 'Security',
+                value: telemetry?.securityStatus ?? 'Not reported',
+              ),
             ],
           ),
         ),

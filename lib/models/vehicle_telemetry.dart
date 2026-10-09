@@ -14,6 +14,18 @@ class VehicleData {
     this.chargingCycles,
     this.motorHealth,
     this.motorTemperatureC,
+    this.motorEfficiencyPercent,
+    this.motorLoadPercent,
+    this.motorRpm,
+    this.motorOperatingHours,
+    this.frontBrakePadLifePercent,
+    this.rearBrakePadLifePercent,
+    this.brakeFluidStatus,
+    this.brakeTemperatureC,
+    this.vehicleSoftwareVersion,
+    this.infotainmentVersion,
+    this.firmwareVersion,
+    this.securityStatus,
     this.brakeHealth,
     this.hardBrakingEvents,
     this.tripsAnalyzed,
@@ -44,6 +56,19 @@ class VehicleData {
   final bool isCharging;
   final DateTime? updatedAt;
   final double? batteryTemperatureC;
+  final double? motorEfficiencyPercent;
+  final double? motorLoadPercent;
+  final int? motorRpm;
+  final double? motorOperatingHours;
+  final double? frontBrakePadLifePercent;
+  final double? rearBrakePadLifePercent;
+  final String? brakeFluidStatus;
+  final double? brakeTemperatureC;
+  final String? vehicleSoftwareVersion;
+  final String? infotainmentVersion;
+  final String? firmwareVersion;
+  final String? securityStatus;
+
   final double? batteryCapacityKwh;
   final int? batteryAgeMonths;
   final int? chargingCycles;
@@ -80,6 +105,18 @@ class VehicleData {
       isCharging: map['isCharging'] is bool && map['isCharging'] as bool,
       updatedAt: _readDate(map['updatedAt']),
       batteryTemperatureC: _optionalNumber(map['batteryTemperatureC']),
+      motorEfficiencyPercent: _optionalNumber(map['motorEfficiencyPercent']),
+      motorLoadPercent: _optionalNumber(map['motorLoadPercent']),
+      motorRpm: _optionalInteger(map['motorRpm']),
+      motorOperatingHours: _optionalNumber(map['motorOperatingHours']),
+      frontBrakePadLifePercent: _optionalNumber(map['frontBrakePadLifePercent']),
+      rearBrakePadLifePercent: _optionalNumber(map['rearBrakePadLifePercent']),
+      brakeFluidStatus: _optionalText(map['brakeFluidStatus']),
+      brakeTemperatureC: _optionalNumber(map['brakeTemperatureC']),
+      vehicleSoftwareVersion: _optionalText(map['vehicleSoftwareVersion']),
+      infotainmentVersion: _optionalText(map['infotainmentVersion']),
+      firmwareVersion: _optionalText(map['firmwareVersion']),
+      securityStatus: _optionalText(map['securityStatus']),
       batteryCapacityKwh: _optionalNumber(map['batteryCapacityKwh']),
       batteryAgeMonths: _optionalInteger(map['batteryAgeMonths']),
       chargingCycles: _optionalInteger(map['chargingCycles']),
@@ -122,8 +159,14 @@ class VehicleData {
     if (value is String) return int.tryParse(value) ?? 0;
     return 0;
   }
-
+    static String? _optionalText(Object? value) {
+    if (value is! String) return null;
+    final text = value.trim();
+    return text.isEmpty ? null : text;
+  }
+  
   static double? _optionalNumber(Object? value) {
+    
     final number = switch (value) {
       num() => value.toDouble(),
       String() => double.tryParse(value),
