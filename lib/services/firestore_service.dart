@@ -46,7 +46,7 @@ class FirestoreService {
 
   void _requireCurrentUser(String uid) {
     if (uid.isEmpty || FirebaseAuth.instance.currentUser?.uid != uid) {
-      throw StateError('You must be signed in to access this charging card.');
+      throw StateError('You must be signed in to access this vehicle data.');
     }
   }
 
@@ -913,26 +913,34 @@ class FirestoreService {
   }) async {
     _requireCurrentUser(uid);
     await _requireOwnedVehicle(uid, vehicleId);
-    final snapshot = await _vehicleControlsPreferencesDocument(
-      uid,
-      vehicleId,
-    ).get();
-    final data = snapshot.data();
-    if (!snapshot.exists || data == null) {
-      final userSnapshot = await _userDocument(uid).get();
+    final document = _vehicleControlsPreferencesDocument(uid, vehicleId);
+    final defaults = const VehicleControlsPreferences();
+    return _firestore.runTransaction((transaction) async {
+      final snapshot = await transaction.get(document);
+      final data = snapshot.data();
+      if (snapshot.exists && data != null) {
+        if (data['vehicleId'] != vehicleId || data['preferences'] is! Map) {
+          throw StateError('Vehicle controls preferences have an invalid scope.');
+        }
+        return VehicleControlsPreferences.fromMap(data['preferences']);
+      }
+
+      final userSnapshot = await transaction.get(_userDocument(uid));
       final userData = userSnapshot.data();
       final legacyPreferences = userData?['preferences'];
-      if (userData?['vehicleId'] == vehicleId && legacyPreferences is Map) {
-        return VehicleControlsPreferences.fromMap(
-          legacyPreferences['vehicleControls'],
-        );
-      }
-      return const VehicleControlsPreferences();
-    }
-    if (data['vehicleId'] != vehicleId || data['preferences'] is! Map) {
-      throw StateError('Vehicle controls preferences have an invalid scope.');
-    }
-    return VehicleControlsPreferences.fromMap(data['preferences']);
+      final preferences =
+          userData?['vehicleId'] == vehicleId && legacyPreferences is Map
+          ? VehicleControlsPreferences.fromMap(
+              legacyPreferences['vehicleControls'],
+            )
+          : defaults;
+      transaction.set(document, {
+        'vehicleId': vehicleId,
+        'preferences': preferences.toMap(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return preferences;
+    });
   }
 
   Future<void> saveVehicleControlsPreferences({

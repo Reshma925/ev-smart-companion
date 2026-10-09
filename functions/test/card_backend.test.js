@@ -95,6 +95,23 @@ function cardPath(uid, vehicleId) {
   return `users/${uid}/vehicles/${vehicleId}/chargingCard/current`;
 }
 
+function controlsPreferencesPath(uid, vehicleId) {
+  return `users/${uid}/vehicles/${vehicleId}/controls/preferences`;
+}
+
+function defaultControlsPreferences() {
+  return {
+    notificationsEnabled: true,
+    safetyAlertsEnabled: true,
+    batteryAlertsEnabled: true,
+    chargingAlertsEnabled: true,
+    passengerProfiles: [],
+    selectedProfileId: null,
+    alertHistory: [],
+    activeAlertKeys: [],
+  };
+}
+
 async function seedConfirmedSession({
   sessionId = "session-001",
   uid = "alice",
@@ -216,6 +233,48 @@ test("an owner can read a missing card document to display the empty state", asy
     getDoc(doc(aliceDb, cardPath("alice", "EV001"))),
   );
   assert.equal(snapshot.exists(), false);
+});
+
+test("vehicle owners can initialize and read scoped controls preferences", async () => {
+  await seedLinkedVehicles();
+  const aliceDb = testEnvironment.authenticatedContext("alice").firestore();
+  const missingPreferences = doc(
+    aliceDb,
+    controlsPreferencesPath("alice", "EV001"),
+  );
+
+  const missingSnapshot = await assertSucceeds(getDoc(missingPreferences));
+  assert.equal(missingSnapshot.exists(), false);
+
+  await assertSucceeds(
+    setDoc(missingPreferences, {
+      vehicleId: "EV001",
+      preferences: defaultControlsPreferences(),
+      updatedAt: ClientTimestamp.now(),
+    }),
+  );
+  const initializedSnapshot = await assertSucceeds(getDoc(missingPreferences));
+  assert.equal(initializedSnapshot.data().preferences.passengerProfiles.length, 0);
+
+  const membershipOwnedPreferences = doc(
+    aliceDb,
+    controlsPreferencesPath("alice", "EV002"),
+  );
+  await assertSucceeds(getDoc(membershipOwnedPreferences));
+
+  await assertFails(
+    getDoc(doc(aliceDb, controlsPreferencesPath("alice", "EV003"))),
+  );
+  await assertFails(
+    getDoc(doc(aliceDb, controlsPreferencesPath("bob", "EV003"))),
+  );
+  await assertFails(
+    setDoc(missingPreferences, {
+      vehicleId: "EV002",
+      preferences: defaultControlsPreferences(),
+      updatedAt: ClientTimestamp.now(),
+    }),
+  );
 });
 
 test("an owner can register a card using Firestore vehicle details", async () => {

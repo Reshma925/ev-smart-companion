@@ -10,6 +10,7 @@ import '../models/vehicle_controls.dart';
 import '../models/vehicle_telemetry.dart';
 import '../services/firestore_service.dart';
 import '../services/vehicle_ble_client.dart';
+import '../services/vehicle_controls_preferences_error.dart';
 
 class VehicleControlsPage extends StatefulWidget {
   const VehicleControlsPage({
@@ -52,6 +53,12 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
   }
 
   Future<void> _initialize() async {
+    if (mounted) {
+      setState(() {
+        _preferencesLoading = true;
+        _preferencesError = null;
+      });
+    }
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       if (mounted) {
@@ -60,6 +67,9 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
           _preferencesError = 'Sign in to use vehicle controls.';
         });
       }
+      debugPrint(
+        '[Vehicle Controls] Preferences read blocked: no signed-in user.',
+      );
       return;
     }
     try {
@@ -75,14 +85,39 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       _alertEngine = VehicleAlertEngine(
         activeKeys: preferences.activeAlertKeys,
       );
-      await _ble.start(widget.vehicle.id);
-    } catch (error) {
+    } catch (error, stackTrace) {
+      final projectId = FirebaseAuth.instance.app.options.projectId;
+      if (error is FirebaseException) {
+        debugPrint(
+          '[Vehicle Controls] Preferences read failed '
+          'project=$projectId path=users/{uid}/vehicles/{vehicleId}/controls/preferences '
+          'code=${error.code}',
+        );
+      } else {
+        debugPrint(
+          '[Vehicle Controls] Preferences read failed '
+          'project=$projectId errorType=${error.runtimeType}',
+        );
+      }
+      debugPrintStack(stackTrace: stackTrace);
       if (!mounted) return;
       setState(() {
         _preferencesLoading = false;
-        _preferencesError =
-            'Could not load vehicle control preferences: $error';
+        _preferencesError = vehicleControlsPreferencesErrorMessage(error);
       });
+      return;
+    }
+    if (!kIsWeb) {
+      try {
+        await _ble.start(widget.vehicle.id);
+      } catch (error) {
+        debugPrint(
+          '[Vehicle Controls] BLE startup failed: ${error.runtimeType}',
+        );
+        _showMessage(
+          'Bluetooth could not start. Retry from the connection card.',
+        );
+      }
     }
   }
 
@@ -168,7 +203,18 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       _preferenceWriteQueue = operation;
       await operation;
     } catch (error) {
-      debugPrint('[Vehicle Controls] Could not save preferences: $error');
+      if (error is FirebaseException) {
+        debugPrint(
+          '[Vehicle Controls] Preference write failed '
+          'path=users/{uid}/vehicles/{vehicleId}/controls/preferences '
+          'code=${error.code}',
+        );
+      } else {
+        debugPrint(
+          '[Vehicle Controls] Preference write failed '
+          'errorType=${error.runtimeType}',
+        );
+      }
       if (!mounted) return;
       setState(
         () => _preferencesSaveError =
@@ -374,6 +420,11 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
             phase: _ble.phase,
             error: _ble.error,
             onRetry: () => _ble.start(widget.vehicle.id),
+            onConnect: () => _ble.start(widget.vehicle.id),
+            onDisconnect: () => unawaited(_ble.disconnect()),
+            isWeb: kIsWeb,
+            deviceName: _ble.selectedDeviceName,
+            lastDataUpdate: _ble.lastDataUpdate,
           ),
         ),
         if (kIsWeb) ...[const SizedBox(height: 8), const _WebBleNotice()],
@@ -386,14 +437,7 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
               valueListenable: _ble.snapshot,
               builder: (context, liveSnapshot, _) {
                 final state = liveSnapshot?.state;
-                final statusPanel = _VehicleStatusPanel(
-                  state: state,
-                  telemetry: telemetry,
-                  telemetryError: telemetrySnapshot.hasError,
-                  telemetryLoading:
-                      telemetrySnapshot.connectionState ==
-                      ConnectionState.waiting,
-                );
+                final statusPanel = _VehicleStatusPanel(state: state);
                 final vehiclePanel = _VehicleDoorPanel(
                   state: state,
                   enabled: _ble.isConnected,
@@ -448,6 +492,10 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
                 return Column(
                   children: [
                     statusPanel,
+                    if (telemetry != null) ...[
+                      const SizedBox(height: 8),
+                      _CloudTelemetryNote(telemetry: telemetry),
+                    ],
                     const SizedBox(height: 14),
                     quickControls,
                     const SizedBox(height: 14),
@@ -552,20 +600,37 @@ class _BleStatusCard extends StatelessWidget {
     required this.phase,
     required this.error,
     required this.onRetry,
+    required this.onConnect,
+    required this.onDisconnect,
+    required this.isWeb,
+    required this.deviceName,
+    required this.lastDataUpdate,
   });
 
   final VehicleBlePhase phase;
   final String? error;
   final VoidCallback onRetry;
+  final VoidCallback onConnect;
+  final VoidCallback onDisconnect;
+  final bool isWeb;
+  final String? deviceName;
+  final DateTime? lastDataUpdate;
 
   @override
   Widget build(BuildContext context) {
     final connected = phase == VehicleBlePhase.connected;
     final message = switch (phase) {
       VehicleBlePhase.unsupported =>
-        'Bluetooth vehicle connection requires a physical Android device.',
+        isWeb
+            ? 'Web Bluetooth is unavailable in this browser or page context.'
+            : 'Bluetooth vehicle connection requires a physical Android device.',
       VehicleBlePhase.authorizing => 'Requesting Bluetooth permission…',
-      VehicleBlePhase.scanning => 'Looking for the EV Vehicle Simulator…',
+      VehicleBlePhase.scanning =>
+        isWeb
+            ? 'Searching for the vehicle…'
+            : 'Looking for the EV Vehicle Simulator…',
+      VehicleBlePhase.selectingDevice =>
+        'Select the EV simulator in Chrome’s Bluetooth device chooser…',
       VehicleBlePhase.connecting => 'Connecting to the vehicle simulator…',
       VehicleBlePhase.connected => 'Connected · receiving live vehicle state',
       VehicleBlePhase.reconnecting => 'Connection interrupted · reconnecting…',
@@ -586,17 +651,68 @@ class _BleStatusCard extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(
-                message,
-                style: TextStyle(
-                  color: error != null ? Colors.red.shade700 : AppTheme.navy,
-                  fontWeight: FontWeight.w600,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    message,
+                    style: TextStyle(
+                      color: error != null
+                          ? Colors.red.shade700
+                          : AppTheme.navy,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (deviceName != null) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      'Selected device: $deviceName',
+                      style: const TextStyle(
+                        color: AppTheme.mutedBlue,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                  Text(
+                    lastDataUpdate == null
+                        ? 'Last BLE update: none received'
+                        : 'Last BLE update: ${_formatDataTime(lastDataUpdate!)}',
+                    style: const TextStyle(
+                      color: AppTheme.mutedBlue,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ),
             ),
-            if (phase == VehicleBlePhase.error ||
-                phase == VehicleBlePhase.stopped)
-              TextButton(onPressed: onRetry, child: const Text('Retry')),
+            if (connected)
+              TextButton(
+                onPressed: onDisconnect,
+                child: const Text('Disconnect'),
+              )
+            else if (isWeb &&
+                phase != VehicleBlePhase.unsupported &&
+                phase != VehicleBlePhase.selectingDevice &&
+                phase != VehicleBlePhase.connecting)
+              FilledButton(
+                onPressed: onConnect,
+                child: Text(
+                  phase == VehicleBlePhase.reconnecting
+                      ? 'Reconnect'
+                      : 'Connect Vehicle',
+                ),
+              )
+            else if (phase == VehicleBlePhase.error ||
+                phase == VehicleBlePhase.stopped ||
+                phase == VehicleBlePhase.reconnecting)
+              TextButton(
+                onPressed: onRetry,
+                child: Text(
+                  phase == VehicleBlePhase.reconnecting
+                      ? 'Reconnect now'
+                      : 'Retry',
+                ),
+              ),
           ],
         ),
       ),
@@ -604,43 +720,40 @@ class _BleStatusCard extends StatelessWidget {
   }
 }
 
+String _formatDataTime(DateTime timestamp) {
+  final local = timestamp.toLocal();
+  final time = TimeOfDay.fromDateTime(local);
+  final hour = time.hourOfPeriod == 0 ? 12 : time.hourOfPeriod;
+  return '$hour:${time.minute.toString().padLeft(2, '0')} '
+      '${time.period == DayPeriod.am ? 'AM' : 'PM'}';
+}
+
 class _WebBleNotice extends StatelessWidget {
   const _WebBleNotice();
 
   @override
   Widget build(BuildContext context) => const Text(
-    'Live Bluetooth controls are unavailable on Web. Open the app on a physical Android device to connect to a vehicle simulator.',
+    'Chrome Web Bluetooth needs HTTPS or localhost, Bluetooth enabled, and permission for the selected device. Connection starts only after you choose Connect Vehicle.',
     style: TextStyle(color: AppTheme.mutedBlue, height: 1.4),
   );
 }
 
 class _VehicleStatusPanel extends StatelessWidget {
-  const _VehicleStatusPanel({
-    required this.state,
-    required this.telemetry,
-    required this.telemetryError,
-    required this.telemetryLoading,
-  });
+  const _VehicleStatusPanel({required this.state});
 
   final VehicleControlState? state;
-  final VehicleData? telemetry;
-  final bool telemetryError;
-  final bool telemetryLoading;
 
   @override
   Widget build(BuildContext context) {
-    final battery = state?.batteryPercent ?? telemetry?.battery;
-    final range = state?.rangeKm ?? telemetry?.range;
-    final isCharging = state?.chargingConnected ?? telemetry?.isCharging;
     final values = [
       _Metric(
         'Battery',
-        battery == null ? '—' : '${battery.round()}%',
+        state == null ? '—' : '${state!.batteryPercent.round()}%',
         Icons.battery_charging_full_rounded,
       ),
       _Metric(
         'Range',
-        range == null ? '—' : '${range.round()} km',
+        state == null ? '—' : '${state!.rangeKm.round()} km',
         Icons.route_rounded,
       ),
       _Metric(
@@ -650,33 +763,22 @@ class _VehicleStatusPanel extends StatelessWidget {
       ),
       _Metric(
         'Charging',
-        isCharging == null
+        state == null
             ? '—'
-            : isCharging
-            ? 'Connected'
-            : 'Not connected',
+            : state!.chargingConnected
+            ? 'Charging'
+            : 'Not charging',
         Icons.ev_station_rounded,
       ),
     ];
     return _Panel(
       title: 'Vehicle status',
       subtitle: state == null
-          ? telemetryError
-                ? 'Cloud telemetry is unavailable'
-                : telemetryLoading
-                ? 'Loading vehicle telemetry…'
-                : 'Cloud telemetry · connect the simulator for live controls'
-          : 'Live BLE telemetry from the simulator',
+          ? 'Awaiting a validated BLE state notification from the simulator.'
+          : 'Simulator-generated live values · received over BLE',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (telemetryError) ...[
-            const Text(
-              'Could not refresh cloud telemetry. BLE controls remain available if connected.',
-              style: TextStyle(color: Colors.redAccent, fontSize: 12),
-            ),
-            const SizedBox(height: 10),
-          ],
           LayoutBuilder(
             builder: (context, constraints) {
               final columns = constraints.maxWidth < 440 ? 2 : 4;
@@ -698,6 +800,30 @@ class _VehicleStatusPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+class _CloudTelemetryNote extends StatelessWidget {
+  const _CloudTelemetryNote({required this.telemetry});
+
+  final VehicleData telemetry;
+
+  @override
+  Widget build(BuildContext context) => _Panel(
+    title: 'Cloud telemetry · separate from BLE',
+    subtitle:
+        'Firebase vehicle record. These values do not indicate a simulator connection.',
+    child: Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      children: [
+        Text('Battery: ${telemetry.battery.round()}%'),
+        Text('Range: ${telemetry.range.round()} km'),
+        Text('Charging: ${telemetry.isCharging ? 'Yes' : 'No'}'),
+        if (telemetry.updatedAt != null)
+          Text('Updated: ${_formatDataTime(telemetry.updatedAt!)}'),
+      ],
+    ),
+  );
 }
 
 class _Metric {

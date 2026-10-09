@@ -4,9 +4,14 @@ import 'dart:collection';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 class VehicleSimulatorPeripheral extends ChangeNotifier {
+  static const MethodChannel _diagnosticsChannel = MethodChannel(
+    'com.evsmartcompanion.vehicle_simulator/ble_diagnostics',
+  );
+
   VehicleSimulatorPeripheral() {
     _stateCharacteristic = GATTCharacteristic.mutable(
       uuid: UUID.fromString(vehicleStateCharacteristicUuid),
@@ -35,6 +40,7 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
     _connectionSubscription = _manager.connectionStateChanged.listen(
       _onConnectionChanged,
     );
+    unawaited(_logBluetoothDiagnostics('simulator startup'));
   }
 
   final PeripheralManager _manager = PeripheralManager();
@@ -108,7 +114,9 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
       return;
     }
     try {
+      await _logBluetoothDiagnostics('before permission request');
       final authorized = await _manager.authorize();
+      await _logBluetoothDiagnostics('after permission request');
       if (!authorized) {
         _setStatus(
           'Bluetooth permission is required to advertise.',
@@ -119,18 +127,15 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
       if (_manager.state != BluetoothLowEnergyState.poweredOn) {
         final state = await _waitForBluetoothState();
         if (state != BluetoothLowEnergyState.poweredOn) {
-          _setStatus(
-            switch (state) {
-              BluetoothLowEnergyState.unsupported =>
-                'This device does not support BLE peripheral advertising.',
-              BluetoothLowEnergyState.poweredOff =>
-                'Bluetooth is off. Turn it on to advertise.',
-              BluetoothLowEnergyState.unauthorized =>
-                'Bluetooth advertising permission was not granted.',
-              _ => 'Bluetooth is not available for advertising.',
-            },
-            error: true,
-          );
+          _setStatus(switch (state) {
+            BluetoothLowEnergyState.unsupported =>
+              'This device does not support BLE peripheral advertising.',
+            BluetoothLowEnergyState.poweredOff =>
+              'Bluetooth is off. Turn it on to advertise.',
+            BluetoothLowEnergyState.unauthorized =>
+              'Bluetooth advertising permission was not granted.',
+            _ => 'Bluetooth is not available for advertising.',
+          }, error: true);
           return;
         }
       }
@@ -142,6 +147,10 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
         return;
       }
       _vehicleId = normalizedVehicleId;
+      debugPrint(
+        '[Vehicle Simulator BLE] Registering GATT service '
+        '$vehicleControlServiceUuid before advertising.',
+      );
       if (_advertising) {
         await _manager.stopAdvertising();
         _advertising = false;
@@ -155,24 +164,49 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
           characteristics: [_stateCharacteristic, _commandCharacteristic],
         ),
       );
+      debugPrint(
+        '[Vehicle Simulator BLE] GATT service registration completed; '
+        'requesting connectable advertisement name=$vehicleSimulatorAdvertisedName '
+        'service=$vehicleControlServiceUuid.',
+      );
       await _manager.startAdvertising(
         Advertisement(
           name: vehicleSimulatorAdvertisedName,
           serviceUUIDs: [UUID.fromString(vehicleControlServiceUuid)],
         ),
       );
+      debugPrint(
+        '[Vehicle Simulator BLE] Android advertising start callback succeeded for '
+        '$vehicleSimulatorAdvertisedName on service $vehicleControlServiceUuid.',
+      );
       _advertising = true;
       _error = null;
       _setStatus('Advertising vehicle $_vehicleId');
       _recordEvent('Advertising as $vehicleSimulatorAdvertisedName');
       await _notifyCurrentState();
-    } catch (error) {
+    } catch (error, stackTrace) {
       _advertising = false;
-      _setStatus(
-        'Could not start BLE advertising. Check that Bluetooth is enabled and no other app is advertising this service.',
-        error: true,
+      _setStatus('Could not start BLE advertising: $error', error: true);
+      debugPrint(
+        '[Vehicle Simulator BLE] Advertising setup/start failed: $error\n$stackTrace',
       );
-      debugPrint('[Vehicle Simulator BLE] Advertising failed: $error');
+    }
+  }
+
+  Future<void> _logBluetoothDiagnostics(String stage) async {
+    try {
+      final diagnostics = await _diagnosticsChannel
+          .invokeMapMethod<String, Object?>('inspect');
+      debugPrint(
+        '[Vehicle Simulator BLE] $stage: '
+        'managerState=${_manager.state}, diagnostics=$diagnostics',
+      );
+    } on PlatformException catch (error, stackTrace) {
+      debugPrint(
+        '[Vehicle Simulator BLE] $stage diagnostic channel failed: '
+        '${error.code}: ${error.message}\n$stackTrace',
+      );
+      rethrow;
     }
   }
 
@@ -196,7 +230,9 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
   Future<void> simulateVehicleDisconnected() async {
     _recordEvent('Scenario: vehicle disconnected');
     await stopAdvertising();
-    _setStatus('Simulated vehicle disconnection. Start advertising to reconnect.');
+    _setStatus(
+      'Simulated vehicle disconnection. Start advertising to reconnect.',
+    );
   }
 
   void updateState(VehicleControlState state, {String? event}) {
@@ -229,26 +265,25 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
 
   void _startChargingProgress() {
     _chargingProgressTimer?.cancel();
-    _chargingProgressTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) {
-        if (_disposed || !_state.chargingConnected) return;
-        final nextBattery = (_state.batteryPercent + 1)
-            .clamp(0, _state.targetChargePercent)
-            .toDouble();
-        final completed = nextBattery >= _state.targetChargePercent;
-        updateState(
-          _state.copyWith(
-            batteryPercent: nextBattery,
-            rangeKm: nextBattery * 3.5,
-            chargingConnected: !completed,
-            chargingPowerKw: completed ? 0 : _state.chargingPowerKw,
-            chargingInterrupted: false,
-          ),
-          event: completed ? 'Charging completed at ${nextBattery.round()}%' : null,
-        );
-      },
-    );
+    _chargingProgressTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_disposed || !_state.chargingConnected) return;
+      final nextBattery = (_state.batteryPercent + 1)
+          .clamp(0, _state.targetChargePercent)
+          .toDouble();
+      final completed = nextBattery >= _state.targetChargePercent;
+      updateState(
+        _state.copyWith(
+          batteryPercent: nextBattery,
+          rangeKm: nextBattery * 3.5,
+          chargingConnected: !completed,
+          chargingPowerKw: completed ? 0 : _state.chargingPowerKw,
+          chargingInterrupted: false,
+        ),
+        event: completed
+            ? 'Charging completed at ${nextBattery.round()}%'
+            : null,
+      );
+    });
   }
 
   void _recordEvent(String message) {
@@ -288,6 +323,9 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
   }
 
   void _onBluetoothStateChanged(BluetoothLowEnergyStateChangedEventArgs event) {
+    debugPrint(
+      '[Vehicle Simulator BLE] Adapter state changed: ${event.state}.',
+    );
     if (event.state == BluetoothLowEnergyState.poweredOff) {
       _advertising = false;
       _subscribers.clear();

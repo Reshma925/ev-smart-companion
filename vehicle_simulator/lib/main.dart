@@ -226,15 +226,15 @@ class _VehicleSimulatorPageState extends State<VehicleSimulatorPage> {
         );
       case 'Vehicle disconnected':
         await _peripheral.simulateVehicleDisconnected();
+      case 'Vehicle reconnected':
+        await _peripheral.startAdvertising(_vehicleIdController.text);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('EV VEHICLE SIMULATOR'),
-      ),
+      appBar: AppBar(title: const Text('EV VEHICLE SIMULATOR')),
       body: AnimatedBuilder(
         animation: _peripheral,
         builder: (context, _) {
@@ -353,6 +353,7 @@ class _VehicleSimulatorPageState extends State<VehicleSimulatorPage> {
                     'Charging completed',
                     'Charging interrupted',
                     'Vehicle disconnected',
+                    'Vehicle reconnected',
                   ])
                     ActionChip(
                       label: Text(scenario),

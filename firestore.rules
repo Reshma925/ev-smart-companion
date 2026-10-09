@@ -159,7 +159,12 @@ service cloud.firestore {
         match /controls/{documentId} {
           allow read: if userOwnsVehicle(uid, vehicleId)
             && documentId == 'preferences'
-            && resource.data.vehicleId == vehicleId;
+            && (
+              !exists(
+                /databases/$(database)/documents/users/$(uid)/vehicles/$(vehicleId)/controls/preferences
+              )
+              || resource.data.vehicleId == vehicleId
+            );
           allow create, update: if userOwnsVehicle(uid, vehicleId)
             && documentId == 'preferences'
             && request.resource.data.keys().hasAll([

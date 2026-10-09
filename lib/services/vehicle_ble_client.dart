@@ -5,10 +5,16 @@ import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
 import 'package:flutter/foundation.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
+import 'vehicle_ble_web_adapter_interface.dart';
+import 'vehicle_ble_web_adapter_stub.dart'
+    if (dart.library.js_interop) 'vehicle_ble_web_adapter_web.dart'
+    as web_adapter;
+
 enum VehicleBlePhase {
   unsupported,
   authorizing,
   scanning,
+  selectingDevice,
   connecting,
   connected,
   reconnecting,
@@ -17,6 +23,9 @@ enum VehicleBlePhase {
 }
 
 class VehicleBleClient extends ChangeNotifier {
+  VehicleBleClient({this.webAdapter});
+
+  final VehicleBleWebAdapter? webAdapter;
   CentralManager? _manager;
   Peripheral? _peripheral;
   GATTCharacteristic? _stateCharacteristic;
@@ -35,13 +44,20 @@ class VehicleBleClient extends ChangeNotifier {
   String? _error;
   VehicleBlePhase _phase = VehicleBlePhase.stopped;
   int _lastSequence = -1;
+  DateTime? _lastDataUpdate;
+  String? _selectedDeviceName;
   int _messageId = 0;
   bool _disposed = false;
   bool _discoveryRunning = false;
   bool _connecting = false;
+  bool _manualDisconnect = false;
   int _reconnectAttempts = 0;
   Completer<void>? _firstStatePacket;
   Future<void> _writeQueue = Future<void>.value();
+  VehicleBleWebAdapter? _resolvedWebAdapter;
+  VehicleBleWebConnection? _webConnection;
+  StreamSubscription<List<int>>? _webStateSubscription;
+  StreamSubscription<void>? _webDisconnectSubscription;
   static const _reconnectDelays = [
     Duration(seconds: 2),
     Duration(seconds: 4),
@@ -54,11 +70,23 @@ class VehicleBleClient extends ChangeNotifier {
 
   VehicleBlePhase get phase => _phase;
   String? get error => _error;
+  DateTime? get lastDataUpdate => _lastDataUpdate;
+  String? get selectedDeviceName => _isWebMode
+      ? _resolvedWebAdapter?.selectedDeviceName
+      : _selectedDeviceName;
   bool get isConnected =>
       _phase == VehicleBlePhase.connected && snapshot.value != null;
 
-  bool get isSupported =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  bool get _isWebMode => kIsWeb || webAdapter != null;
+
+  bool get isSupported {
+    if (_isWebMode) {
+      _resolvedWebAdapter ??=
+          webAdapter ?? web_adapter.createVehicleBleWebAdapter();
+      return _resolvedWebAdapter!.isSupported;
+    }
+    return defaultTargetPlatform == TargetPlatform.android;
+  }
 
   Future<void> start(String vehicleId) async {
     _vehicleId = vehicleId.trim();
@@ -68,7 +96,9 @@ class VehicleBleClient extends ChangeNotifier {
     if (!isSupported) {
       _setPhase(
         VehicleBlePhase.unsupported,
-        'Bluetooth vehicle connection requires a physical Android device.',
+        _isWebMode
+            ? 'Web Bluetooth is not available in this browser. Use current Chrome on HTTPS or localhost.'
+            : 'Bluetooth vehicle connection requires a physical Android device.',
       );
       return;
     }
@@ -76,11 +106,46 @@ class VehicleBleClient extends ChangeNotifier {
     _reconnectTimer?.cancel();
     _scanTimeoutTimer?.cancel();
     _reconnectAttempts = 0;
+    _manualDisconnect = false;
     await _startAttempt();
+  }
+
+  Future<void> disconnect() async {
+    _manualDisconnect = true;
+    _reconnectTimer?.cancel();
+    _scanTimeoutTimer?.cancel();
+    if (_isWebMode) {
+      final connection = _webConnection;
+      _webConnection = null;
+      await _cancelWebSubscriptions();
+      if (connection != null) await connection.close();
+    } else {
+      await _stopDiscovery();
+      final peripheral = _peripheral;
+      if (peripheral != null) {
+        try {
+          await _manager?.disconnect(peripheral);
+        } catch (error) {
+          debugPrint('[Vehicle BLE] User-requested disconnect failed: $error');
+          _onBleError(error, StackTrace.current);
+          return;
+        }
+        _peripheral = null;
+        _stateCharacteristic = null;
+        _commandCharacteristic = null;
+      }
+    }
+    snapshot.value = null;
+    _firstStatePacket = null;
+    _setPhase(VehicleBlePhase.stopped, null);
   }
 
   Future<void> _startAttempt() async {
     if (_disposed) return;
+    if (_isWebMode) {
+      await _startWebAttempt();
+      return;
+    }
     _manager ??= CentralManager();
     _discoveredSubscription ??= _manager!.discovered.listen(
       _onDiscovered,
@@ -116,6 +181,106 @@ class VehicleBleClient extends ChangeNotifier {
     } catch (error) {
       _onBleError(error, StackTrace.current);
     }
+  }
+
+  Future<void> _startWebAttempt() async {
+    final adapter = _resolvedWebAdapter!;
+    if (_disposed || _connecting) return;
+    _connecting = true;
+    _setPhase(
+      adapter.hasSelectedDevice
+          ? VehicleBlePhase.connecting
+          : VehicleBlePhase.selectingDevice,
+      null,
+    );
+    try {
+      final connection = await adapter
+          .connect(
+            requestDevice: !adapter.hasSelectedDevice,
+            onConnecting: () => _setPhase(VehicleBlePhase.connecting, null),
+          );
+      _webConnection = connection;
+      _firstStatePacket = Completer<void>();
+      _lastSequence = -1;
+      _stateAssembler.reset();
+      _webStateSubscription = connection.stateNotifications.listen(
+        _onStateBytes,
+        onError: _onBleError,
+      );
+      _webDisconnectSubscription = connection.disconnected.listen(
+        (_) => _onWebDisconnected(connection),
+        onError: _onBleError,
+      );
+      await connection.startStateNotifications().timeout(_operationTimeout);
+      await _firstStatePacket!.future.timeout(_operationTimeout);
+      _reconnectAttempts = 0;
+    } on TimeoutException catch (error) {
+      final connection = _webConnection;
+      _webConnection = null;
+      await _cancelWebSubscriptions();
+      if (connection != null) await connection.close();
+      _firstStatePacket = null;
+      _setPhase(
+        VehicleBlePhase.error,
+        'Bluetooth connection timed out. Check that the simulator is advertising and try again.',
+      );
+      debugPrint('[Vehicle BLE Web] Connection timed out: $error');
+      if (adapter.hasSelectedDevice) _scheduleReconnect();
+    } catch (error) {
+      final connection = _webConnection;
+      _webConnection = null;
+      await _cancelWebSubscriptions();
+      if (connection != null) await connection.close();
+      _firstStatePacket = null;
+      _setPhase(VehicleBlePhase.error, _webErrorMessage(error));
+      debugPrint('[Vehicle BLE Web] Connection failed: $error');
+      if (adapter.hasSelectedDevice) _scheduleReconnect();
+    } finally {
+      _connecting = false;
+    }
+  }
+
+  String _webErrorMessage(Object error) {
+    final message = error.toString();
+    if (message.contains('NotFoundError') ||
+        message.contains('cancelled') ||
+        message.contains('canceled')) {
+      return 'No vehicle selected. Choose Connect Vehicle to open the Chrome device chooser.';
+    }
+    if (message.contains('SecurityError') ||
+        message.contains('NotAllowedError')) {
+      return 'Chrome blocked Bluetooth access. Use HTTPS or localhost and allow the selected device.';
+    }
+    if (message.contains('NetworkError')) {
+      return 'Could not connect to the vehicle. Keep the simulator advertising and retry.';
+    }
+    if (message.contains('NotFound')) {
+      return 'The selected device is missing the EV vehicle service or required characteristics.';
+    }
+    return 'Could not connect to the vehicle over Web Bluetooth: $message';
+  }
+
+  void _onWebDisconnected(VehicleBleWebConnection connection) {
+    if (_webConnection != connection) return;
+    _webConnection = null;
+    unawaited(_cancelWebSubscriptions());
+    unawaited(connection.close());
+    if (_disposed) return;
+    snapshot.value = null;
+    _firstStatePacket = null;
+    if (_manualDisconnect) {
+      _setPhase(VehicleBlePhase.stopped, null);
+      return;
+    }
+    _setPhase(VehicleBlePhase.reconnecting, null);
+    _scheduleReconnect();
+  }
+
+  Future<void> _cancelWebSubscriptions() async {
+    await _webStateSubscription?.cancel();
+    _webStateSubscription = null;
+    await _webDisconnectSubscription?.cancel();
+    _webDisconnectSubscription = null;
   }
 
   Future<void> _discover() async {
@@ -156,6 +321,7 @@ class VehicleBleClient extends ChangeNotifier {
         event.advertisement.name != vehicleSimulatorAdvertisedName) {
       return;
     }
+    _selectedDeviceName = event.advertisement.name;
     _scanTimeoutTimer?.cancel();
     unawaited(_stopDiscovery());
     unawaited(_connect(event.peripheral));
@@ -210,11 +376,13 @@ class VehicleBleClient extends ChangeNotifier {
         );
       }
       _firstStatePacket = Completer<void>();
-      await manager.setCharacteristicNotifyState(
-        peripheral,
-        _stateCharacteristic!,
-        state: true,
-      ).timeout(_operationTimeout);
+      await manager
+          .setCharacteristicNotifyState(
+            peripheral,
+            _stateCharacteristic!,
+            state: true,
+          )
+          .timeout(_operationTimeout);
       _lastSequence = -1;
       _stateAssembler.reset();
       await _firstStatePacket!.future.timeout(_operationTimeout);
@@ -241,6 +409,10 @@ class VehicleBleClient extends ChangeNotifier {
       _connecting = false;
       if (!_disposed) {
         snapshot.value = null;
+        if (_manualDisconnect) {
+          _setPhase(VehicleBlePhase.stopped, null);
+          return;
+        }
         _setPhase(VehicleBlePhase.reconnecting, null);
         _scheduleReconnect();
       }
@@ -253,8 +425,12 @@ class VehicleBleClient extends ChangeNotifier {
             vehicleStateCharacteristicUuid.toLowerCase()) {
       return;
     }
+    _onStateBytes(event.value);
+  }
+
+  void _onStateBytes(List<int> value) {
     try {
-      final bytes = _stateAssembler.add(event.value);
+      final bytes = _stateAssembler.add(value);
       if (bytes == null) return;
       final decoded = VehicleStateSnapshot.decode(utf8.decode(bytes));
       if (decoded.vehicleId != _vehicleId) {
@@ -266,6 +442,7 @@ class VehicleBleClient extends ChangeNotifier {
       }
       if (decoded.sequence <= _lastSequence) return;
       _lastSequence = decoded.sequence;
+      _lastDataUpdate = DateTime.now();
       snapshot.value = decoded;
       _setPhase(VehicleBlePhase.connected, null);
       if (!(_firstStatePacket?.isCompleted ?? true)) {
@@ -277,6 +454,10 @@ class VehicleBleClient extends ChangeNotifier {
   }
 
   Future<void> send(VehicleControlCommand command) async {
+    if (_isWebMode) {
+      await _sendWeb(command);
+      return;
+    }
     final manager = _manager;
     final peripheral = _peripheral;
     final characteristic = _commandCharacteristic;
@@ -310,6 +491,36 @@ class VehicleBleClient extends ChangeNotifier {
           value: frame,
           type: GATTCharacteristicWriteType.withResponse,
         );
+      }
+    });
+    _writeQueue = operation.catchError((Object error) {
+      _setPhase(
+        VehicleBlePhase.error,
+        'The vehicle command could not be sent.',
+      );
+      Error.throwWithStackTrace(error, StackTrace.current);
+    });
+    await operation;
+  }
+
+  Future<void> _sendWeb(VehicleControlCommand command) async {
+    final connection = _webConnection;
+    final current = snapshot.value;
+    if (!isConnected || connection == null || current == null) {
+      throw StateError(
+        'Connect to the vehicle simulator before sending controls.',
+      );
+    }
+    applyVehicleCommand(current.state, command);
+    final bytes = Uint8List.fromList(utf8.encode(command.encode()));
+    final operation = _writeQueue.then((_) async {
+      final frames = BleFrameCodec.fragment(
+        bytes,
+        maximumFrameLength: bleDefaultFrameLength,
+        messageId: _messageId++ & 0xff,
+      );
+      for (final frame in frames) {
+        await connection.write(frame);
       }
     });
     _writeQueue = operation.catchError((Object error) {
@@ -386,8 +597,12 @@ class VehicleBleClient extends ChangeNotifier {
     _discoveredSubscription?.cancel();
     _connectionSubscription?.cancel();
     _notificationSubscription?.cancel();
+    unawaited(_cancelWebSubscriptions());
     final peripheral = _peripheral;
     if (peripheral != null) unawaited(_disconnectPeripheral(peripheral));
+    final webConnection = _webConnection;
+    _webConnection = null;
+    if (webConnection != null) unawaited(webConnection.close());
     if (_discoveryRunning) unawaited(_manager?.stopDiscovery());
     snapshot.dispose();
     super.dispose();
