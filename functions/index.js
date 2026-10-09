@@ -9,6 +9,8 @@ const learningAssistant = require("./learning_assistant");
 admin.initializeApp();
 const db = getFirestore();
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
+const paypalClientId = defineSecret("PAYPAL_CLIENT_ID");
+const paypalClientSecret = defineSecret("PAYPAL_CLIENT_SECRET");
 
 function authenticatedUid(request) {
   const uid = request.auth?.uid;
@@ -21,10 +23,108 @@ function mapError(error) {
   const message = error instanceof Error ? error.message : "Request failed.";
   const code = message.includes("Insufficient charging card balance")
     ? "resource-exhausted"
-    : message.includes("already")
+    : message.includes("Recharge amount") ||
+        message.includes("Recharge currency")
+      ? "invalid-argument"
+      : message.includes("already")
       ? "already-exists"
       : "failed-precondition";
   return new HttpsError(code, message);
+}
+
+function paypalCredentials() {
+  let clientId = "";
+  let clientSecret = "";
+  try {
+    clientId = paypalClientId.value();
+  } catch (error) {
+    console.error("[PayPal Recharge] Could not read local client ID secret.", {
+      name: error instanceof Error ? error.name : "UnknownError",
+    });
+  }
+  try {
+    clientSecret = paypalClientSecret.value();
+  } catch (error) {
+    console.error("[PayPal Recharge] Could not read local client secret.", {
+      name: error instanceof Error ? error.name : "UnknownError",
+    });
+  }
+  console.info(
+    `[PayPal Recharge] PayPal client ID configured: ${Boolean(clientId)}`,
+  );
+  console.info(
+    `[PayPal Recharge] PayPal client secret configured: ${Boolean(clientSecret)}`,
+  );
+  if (!clientId || !clientSecret) {
+    throw new HttpsError(
+      "failed-precondition",
+      "PayPal Sandbox credentials are not configured for the local emulator.",
+    );
+  }
+  return { paypalClientId: clientId, paypalClientSecret: clientSecret };
+}
+
+function mapPayPalError(error, operation) {
+  if (error instanceof HttpsError) return error;
+  if (error instanceof backend.PayPalApiError) {
+    const metadata = {
+      httpStatus: error.status,
+      ...(error.paypalErrorName ? { paypalErrorName: error.paypalErrorName } : {}),
+      ...(error.paypalMessage ? { paypalMessage: error.paypalMessage } : {}),
+      ...(error.details?.length ? { details: error.details } : {}),
+      ...(error.debugId ? { debugId: error.debugId } : {}),
+    };
+    console.error(`[PayPal Recharge] ${operation} failed.`, metadata);
+    const details = [
+      `HTTP ${error.status}`,
+      ...(error.paypalErrorName ? [error.paypalErrorName] : []),
+      ...(error.paypalMessage ? [error.paypalMessage] : []),
+      ...(error.details ?? []).map((detail) =>
+        [
+          detail.issue,
+          detail.field ? `field ${detail.field}` : undefined,
+          detail.description,
+        ]
+          .filter(Boolean)
+          .join(": "),
+      ),
+      ...(error.debugId ? [`debug_id ${error.debugId}`] : []),
+    ].join(", ");
+    return new HttpsError(
+      error.status === 422 ? "invalid-argument" : "unavailable",
+      `PayPal Sandbox ${operation} failed (${details}).`,
+    );
+  }
+  console.error(`[PayPal Recharge] ${operation} failed.`, {
+    name: error instanceof Error ? error.name : "UnknownError",
+    message: error instanceof Error ? error.message : "Unknown error",
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+  return new HttpsError(
+    "internal",
+    `PayPal Sandbox ${operation} could not be completed. No balance was added.`,
+  );
+}
+
+function mapRechargeCallError(error, operation) {
+  if (error instanceof HttpsError) return error;
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("PayPal Sandbox credentials are not configured")) {
+    return new HttpsError(
+      "failed-precondition",
+      "PayPal Sandbox credentials are not configured for the local emulator.",
+    );
+  }
+  if (
+    message.includes("vehicle") ||
+    message.includes("charging card") ||
+    message.includes("Recharge amount") ||
+    message.includes("Recharge currency") ||
+    message.includes("PayPal order")
+  ) {
+    return mapError(error);
+  }
+  return mapPayPalError(error, operation);
 }
 
 exports.verifyAndCreateUserProfile = onCall(async (request) => {
@@ -161,6 +261,48 @@ exports.migrateLegacyChargingCard = onCall(async (request) => {
     });
   } catch (error) {
     throw mapError(error);
+  }
+});
+
+exports.createPayPalRechargeOrder = onCall({
+  secrets: [paypalClientId, paypalClientSecret],
+  timeoutSeconds: 30,
+}, async (request) => {
+  console.info("[PayPal Recharge] createPayPalRechargeOrder invoked");
+  try {
+    return await backend.createPayPalRechargeOrder({
+      db,
+      Timestamp,
+      uid: authenticatedUid(request),
+      vehicleId: request.data?.vehicleId,
+      amount: request.data?.amount,
+      currency: request.data?.currency,
+      ...paypalCredentials(),
+    });
+  } catch (error) {
+    throw mapRechargeCallError(error, "order creation");
+  }
+});
+
+exports.capturePayPalRechargeOrder = onCall({
+  secrets: [paypalClientId, paypalClientSecret],
+  timeoutSeconds: 30,
+}, async (request) => {
+  console.info("[PayPal Recharge] capturePayPalRechargeOrder invoked");
+  console.info(
+    `[PayPal Recharge] capture request authenticated: ${Boolean(request.auth?.uid)}`,
+  );
+  try {
+    return await backend.capturePayPalRechargeOrder({
+      db,
+      Timestamp,
+      uid: authenticatedUid(request),
+      vehicleId: request.data?.vehicleId,
+      orderId: request.data?.orderId,
+      ...paypalCredentials(),
+    });
+  } catch (error) {
+    throw mapRechargeCallError(error, "capture");
   }
 });
 

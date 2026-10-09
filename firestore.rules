@@ -39,6 +39,36 @@ service cloud.firestore {
         && get(vehiclePath).data.isActive == true;
     }
 
+    function validVehicleControlsPreferences(preferences) {
+      return preferences is map
+        && preferences.keys().hasAll([
+          'notificationsEnabled', 'safetyAlertsEnabled',
+          'batteryAlertsEnabled', 'chargingAlertsEnabled',
+          'passengerProfiles', 'selectedProfileId', 'alertHistory',
+          'activeAlertKeys'
+        ])
+        && preferences.keys().hasOnly([
+          'notificationsEnabled', 'safetyAlertsEnabled',
+          'batteryAlertsEnabled', 'chargingAlertsEnabled',
+          'passengerProfiles', 'selectedProfileId', 'alertHistory',
+          'activeAlertKeys'
+        ])
+        && preferences.notificationsEnabled is bool
+        && preferences.safetyAlertsEnabled is bool
+        && preferences.batteryAlertsEnabled is bool
+        && preferences.chargingAlertsEnabled is bool
+        && preferences.passengerProfiles is list
+        && preferences.passengerProfiles.size() <= 20
+        && (
+          preferences.selectedProfileId == null
+          || preferences.selectedProfileId is string
+        )
+        && preferences.alertHistory is list
+        && preferences.alertHistory.size() <= 50
+        && preferences.activeAlertKeys is list
+        && preferences.activeAlertKeys.size() <= 32;
+    }
+
     match /users/{uid} {
       allow read: if ownsUser(uid);
       allow create: if false;
@@ -125,6 +155,26 @@ service cloud.firestore {
       match /vehicles/{vehicleId} {
         allow read: if ownsUser(uid);
         allow create, update, delete: if false;
+
+        match /controls/{documentId} {
+          allow read: if userOwnsVehicle(uid, vehicleId)
+            && documentId == 'preferences'
+            && resource.data.vehicleId == vehicleId;
+          allow create, update: if userOwnsVehicle(uid, vehicleId)
+            && documentId == 'preferences'
+            && request.resource.data.keys().hasAll([
+              'vehicleId', 'preferences', 'updatedAt'
+            ])
+            && request.resource.data.keys().hasOnly([
+              'vehicleId', 'preferences', 'updatedAt'
+            ])
+            && request.resource.data.vehicleId == vehicleId
+            && request.resource.data.updatedAt is timestamp
+            && validVehicleControlsPreferences(
+              request.resource.data.preferences
+            );
+          allow delete: if false;
+        }
 
         match /chargingCard/{cardId} {
           allow read: if userOwnsVehicle(uid, vehicleId)

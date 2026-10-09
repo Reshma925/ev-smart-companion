@@ -49,6 +49,9 @@ dependencies:
   model_viewer_pro: ^2.0.4
   model_viewer_plus: ^1.10.0
   web: ^1.1.1
+  bluetooth_low_energy: ^6.2.1
+  vehicle_ble_protocol:
+    path: packages/vehicle_ble_protocol
 
 dev_dependencies:
   flutter_test:

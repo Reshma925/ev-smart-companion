@@ -65,6 +65,35 @@ void main() {
     expect(transaction.vehicleId, isNull);
   });
 
+  test('parses PayPal recharge provider and safe transaction identifiers', () {
+    final transaction = ChargingTransaction.fromMap({
+      'amount': 100,
+      'currency': 'INR',
+      'type': 'credit',
+      'description': 'PayPal recharge',
+      'provider': 'paypal',
+      'paymentProvider': 'PayPal Sandbox',
+      'paypalOrderId': 'SANDBOXORDER123',
+      'paypalCaptureId': 'SANDBOXCATURE123',
+      'paypalAmount': 1.2,
+      'paypalCurrency': 'USD',
+      'conversionType': 'demo_fixed_rate',
+      'demoExchangeRate': 0.012,
+      'status': 'completed',
+    }, id: 'paypal-transaction-1');
+
+    expect(transaction.paymentProvider, 'PayPal Sandbox');
+    expect(transaction.paypalOrderId, 'SANDBOXORDER123');
+    expect(transaction.paypalCaptureId, 'SANDBOXCATURE123');
+    expect(transaction.amount, 100);
+    expect(transaction.currency, 'INR');
+    expect(transaction.paypalAmount, 1.2);
+    expect(transaction.paypalCurrency, 'USD');
+    expect(transaction.conversionType, 'demo_fixed_rate');
+    expect(transaction.demoExchangeRate, 0.012);
+    expect(transaction.status, 'completed');
+  });
+
   test('masks card numbers while preserving legacy masked values', () {
     final newCard = ChargingCard.fromMap({
       'cardNumber': 'EV-001-1234',

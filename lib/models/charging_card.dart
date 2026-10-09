@@ -117,6 +117,15 @@ class ChargingTransaction {
     this.currency,
     this.cardId,
     this.sessionReferenceId,
+    this.paymentProvider,
+    this.paymentMethod,
+    this.paypalOrderId,
+    this.paypalCaptureId,
+    this.paypalAmount,
+    this.paypalCurrency,
+    this.conversionType,
+    this.demoExchangeRate,
+    this.mockPaymentDetails,
   });
 
   final String id;
@@ -134,11 +143,30 @@ class ChargingTransaction {
   final String? currency;
   final String? cardId;
   final String? sessionReferenceId;
+  final String? paymentProvider;
+  final String? paymentMethod;
+  final String? paypalOrderId;
+  final String? paypalCaptureId;
+  final double? paypalAmount;
+  final String? paypalCurrency;
+  final String? conversionType;
+  final double? demoExchangeRate;
+  final Map<String, String>? mockPaymentDetails;
 
   factory ChargingTransaction.fromMap(
     Map<String, dynamic> map, {
     required String id,
   }) {
+    final rawPaymentDetails = map['mockPaymentDetails'];
+    final paymentDetails = rawPaymentDetails is Map
+        ? rawPaymentDetails.map(
+            (key, value) => MapEntry(
+              key.toString(),
+              value == null ? '' : value.toString(),
+            ),
+          )
+        : <String, String>{};
+
     return ChargingTransaction(
       id: id,
       amount: ChargingCard._number(map['amount']),
@@ -157,6 +185,17 @@ class ChargingTransaction {
       sessionReferenceId: ChargingCard._string(
         map['sessionReferenceId'] ?? map['chargingSessionId'],
       ),
+      paymentProvider: ChargingCard._string(
+        map['paymentProvider'] ?? map['provider'],
+      ),
+      paymentMethod: ChargingCard._string(map['paymentMethod']),
+      paypalOrderId: ChargingCard._string(map['paypalOrderId']),
+      paypalCaptureId: ChargingCard._string(map['paypalCaptureId']),
+      paypalAmount: ChargingCard._number(map['paypalAmount']),
+      paypalCurrency: ChargingCard._string(map['paypalCurrency']),
+      conversionType: ChargingCard._string(map['conversionType']),
+      demoExchangeRate: ChargingCard._number(map['demoExchangeRate']),
+      mockPaymentDetails: paymentDetails,
     );
   }
 }

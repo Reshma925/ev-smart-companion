@@ -1,5 +1,156 @@
+const { createHash } = require("node:crypto");
+
 const CARD_ID = "current";
 const MIGRATION_TRANSACTION_LIMIT = 400;
+const PAYPAL_API_BASE_URL = "https://api-m.sandbox.paypal.com";
+const MAX_PAYPAL_RECHARGE_AMOUNT = 10000;
+// Demo-only conversion for PayPal Sandbox; this is not a live exchange rate.
+const DEMO_EXCHANGE_RATE_INR_TO_USD = 0.012;
+const PAYPAL_SANDBOX_CURRENCY = "USD";
+
+class PayPalApiError extends Error {
+  constructor(operation, status, errorName, paypalMessage, details, debugId) {
+    super(`PayPal ${operation} failed with HTTP ${status}.`);
+    this.name = "PayPalApiError";
+    this.status = status;
+    this.paypalErrorName = errorName;
+    this.paypalMessage = paypalMessage;
+    this.details = details;
+    this.debugId = debugId;
+  }
+}
+
+function paypalOrderDocumentId(orderId) {
+  return createHash("sha256").update(orderId).digest("hex");
+}
+
+function convertInrToPaypalAmount(inrAmount) {
+  return Number(
+    (inrAmount * DEMO_EXCHANGE_RATE_INR_TO_USD + Number.EPSILON).toFixed(2),
+  );
+}
+
+async function throwPayPalApiError(operation, response) {
+  let body = {};
+  try {
+    body = await response.json();
+  } catch {
+    // PayPal error metadata may be absent; never expose the raw response body.
+  }
+  const safeText = (value) =>
+    typeof value === "string"
+      ? value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 500)
+      : undefined;
+  const details = Array.isArray(body.details)
+    ? body.details
+        .filter((detail) => detail && typeof detail === "object")
+        .map((detail) => ({
+          ...(safeText(detail.issue) ? { issue: safeText(detail.issue) } : {}),
+          ...(safeText(detail.field) ? { field: safeText(detail.field) } : {}),
+          ...(safeText(detail.description)
+            ? { description: safeText(detail.description) }
+            : {}),
+        }))
+    : [];
+  const errorName = safeText(body.name) ?? safeText(body.error);
+  const message = safeText(body.message);
+  const debugId = safeText(body.debug_id);
+  console.error(`[PayPal Recharge] ${operation} response diagnostics:`, {
+    httpStatus: response.status,
+    ...(errorName ? { name: errorName } : {}),
+    ...(message ? { message } : {}),
+    ...(details.length ? { details } : {}),
+    ...(debugId ? { debug_id: debugId } : {}),
+  });
+  throw new PayPalApiError(
+    operation,
+    response.status,
+    errorName,
+    message,
+    details,
+    debugId,
+  );
+}
+
+async function paypalRequest({
+  operation,
+  path,
+  method = "GET",
+  paypalClientId,
+  paypalClientSecret,
+  body,
+  requestId,
+  accessToken,
+}) {
+  let token = accessToken;
+  if (!token) {
+    const oauthEndpoint = `${PAYPAL_API_BASE_URL}/v1/oauth2/token`;
+    console.info(`[PayPal Recharge] PayPal OAuth endpoint: ${oauthEndpoint}`);
+    const tokenResponse = await fetch(oauthEndpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(
+          `${paypalClientId}:${paypalClientSecret}`,
+        ).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "grant_type=client_credentials",
+    });
+    console.info(
+      `[PayPal Recharge] PayPal OAuth HTTP status: ${tokenResponse.status}`,
+    );
+    if (!tokenResponse.ok) {
+      console.error("[PayPal Recharge] OAuth success: false");
+      await throwPayPalApiError("OAuth token request", tokenResponse);
+    }
+    const tokenBody = await tokenResponse.json();
+    token = tokenBody.access_token;
+    if (typeof token !== "string" || !token) {
+      throw new Error("PayPal Sandbox did not return an access token.");
+    }
+    console.info("[PayPal Recharge] OAuth success: true");
+    console.info("[PayPal Recharge] OAuth token obtained.");
+  }
+
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+  if (requestId) headers["PayPal-Request-Id"] = requestId;
+  const serializedBody = body === undefined ? undefined : JSON.stringify(body);
+  if (operation === "order creation") {
+    const paypalAmount = body?.purchase_units?.[0]?.amount;
+    if (
+      paypalAmount?.currency_code !== PAYPAL_SANDBOX_CURRENCY ||
+      typeof paypalAmount.value !== "string" ||
+      !/^\d+\.\d{2}$/.test(paypalAmount.value)
+    ) {
+      throw new Error(
+        "PayPal order must use a formatted USD amount before submission.",
+      );
+    }
+    console.info(
+      `[PayPal Recharge] PayPal Create Order endpoint: ${PAYPAL_API_BASE_URL}${path}`,
+    );
+    console.info("[PayPal Recharge] PayPal Create Order method: POST");
+    console.info(
+      "[PayPal Recharge] PayPal Create Order exact serialized request body:",
+      serializedBody,
+    );
+  }
+  const response = await fetch(`${PAYPAL_API_BASE_URL}${path}`, {
+    method,
+    headers,
+    ...(serializedBody === undefined ? {} : { body: serializedBody }),
+  });
+  if (operation === "order creation") {
+    console.info(
+      `[PayPal Recharge] PayPal Create Order HTTP status: ${response.status}`,
+    );
+  }
+  if (!response.ok) await throwPayPalApiError(operation, response);
+  return response.json();
+}
 
 function normalizeText(value) {
   return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -524,6 +675,396 @@ async function migrateLegacyChargingCard({ db, Timestamp, uid, vehicleId }) {
   return result;
 }
 
+function normalizeRechargeCurrency(value) {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  return /^[A-Z]{3}$/.test(normalized) ? normalized : "INR";
+}
+
+function validateRechargeAmount(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Recharge amount must be greater than zero.");
+  }
+  if (amount > MAX_PAYPAL_RECHARGE_AMOUNT) {
+    throw new Error(
+      `Recharge amount cannot exceed ${MAX_PAYPAL_RECHARGE_AMOUNT.toFixed(2)}.`,
+    );
+  }
+  if (Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) {
+    throw new Error("Recharge amounts must use no more than two decimals.");
+  }
+  return Number((Math.round(amount * 100) / 100).toFixed(2));
+}
+
+async function ensureVehicleCard({ db, uid, vehicleId }) {
+  const normalizedVehicleId = typeof vehicleId === "string" ? vehicleId.trim() : "";
+  if (!normalizedVehicleId) {
+    throw new Error("A connected vehicle ID is required.");
+  }
+  const userRef = db.collection("users").doc(uid);
+  const membershipRef = db.collection("users").doc(uid).collection("vehicles").doc(normalizedVehicleId);
+  const vehicleRef = db.collection("vehicles").doc(normalizedVehicleId);
+  const cardRefInstance = cardRef(db, uid, normalizedVehicleId);
+  const [
+    userSnapshot,
+    membershipSnapshot,
+    vehicleSnapshot,
+    cardSnapshot,
+  ] = await Promise.all([
+    userRef.get(),
+    membershipRef.get(),
+    vehicleRef.get(),
+    cardRefInstance.get(),
+  ]);
+
+  if (!userSnapshot.exists) {
+    throw new Error("This vehicle is not linked to your account.");
+  }
+  const userData = userSnapshot.data();
+  const membershipData = membershipSnapshot.data();
+  const primaryVehicleMatches = userData?.vehicleId === normalizedVehicleId;
+  const membershipMatches =
+    membershipSnapshot.exists &&
+    membershipData?.uid === uid &&
+    membershipData?.vehicleId === normalizedVehicleId;
+  if (!primaryVehicleMatches && !membershipMatches) {
+    throw new Error("This vehicle is not linked to your account.");
+  }
+  if (!vehicleSnapshot.exists || vehicleSnapshot.data()?.isActive !== true) {
+    throw new Error("The linked vehicle is unavailable or inactive.");
+  }
+  if (!cardSnapshot.exists) {
+    throw new Error("No charging card is registered for this vehicle.");
+  }
+
+  return {
+    cardRef: cardRefInstance,
+    cardSnapshot,
+  };
+}
+
+async function createPayPalRechargeOrder({
+  db,
+  Timestamp,
+  uid,
+  vehicleId,
+  amount,
+  currency,
+  paypalClientId,
+  paypalClientSecret,
+}) {
+  const normalizedVehicleId = typeof vehicleId === "string" ? vehicleId.trim() : "";
+  const rechargeAmount = validateRechargeAmount(amount);
+  const { cardSnapshot } = await ensureVehicleCard({
+    db,
+    uid,
+    vehicleId: normalizedVehicleId,
+  });
+  const cardCurrency = normalizeRechargeCurrency(
+    cardSnapshot.data().currency,
+  );
+  if (
+    currency !== undefined &&
+    normalizeRechargeCurrency(currency) !== cardCurrency
+  ) {
+    throw new Error("Recharge currency must match the charging card currency.");
+  }
+  const normalizedCurrency = cardCurrency;
+  if (normalizedCurrency !== "INR") {
+    throw new Error("PayPal Sandbox demo conversion requires an INR charging card.");
+  }
+  const paypalAmount = convertInrToPaypalAmount(rechargeAmount);
+  const currentBalance =
+    typeof cardSnapshot.data().balance === "number" &&
+    Number.isFinite(cardSnapshot.data().balance)
+      ? cardSnapshot.data().balance
+      : 0;
+  if (!paypalClientId || !paypalClientSecret) {
+    throw new Error(
+      "PayPal Sandbox credentials are not configured for the local emulator.",
+    );
+  }
+
+  const order = await paypalRequest({
+    operation: "order creation",
+    path: "/v2/checkout/orders",
+    method: "POST",
+    paypalClientId,
+    paypalClientSecret,
+    requestId: createHash("sha256")
+      .update(`${uid}:${normalizedVehicleId}:${Date.now()}:${Math.random()}`)
+      .digest("hex")
+      .slice(0, 36),
+    body: {
+      intent: "CAPTURE",
+      purchase_units: [
+        {
+          reference_id: normalizedVehicleId,
+          description: "EV Smart Companion charging-card recharge",
+          amount: {
+            currency_code: PAYPAL_SANDBOX_CURRENCY,
+            value: paypalAmount.toFixed(2),
+          },
+        },
+      ],
+      application_context: {
+        brand_name: "EV Smart Companion",
+        landing_page: "LOGIN",
+        user_action: "PAY_NOW",
+        return_url: "https://example.com/paypal-return",
+        cancel_url: "https://example.com/paypal-cancel",
+      },
+    },
+  });
+
+  if (typeof order.id !== "string" || !order.id) {
+    throw new Error("PayPal Sandbox did not return an order ID.");
+  }
+  console.info("[PayPal Recharge] PayPal Sandbox order created.");
+  const approval = Array.isArray(order.links)
+    ? order.links.find((link) => link.rel === "approve")
+    : null;
+  if (!approval || typeof approval.href !== "string") {
+    throw new Error("PayPal Sandbox did not return an approval link.");
+  }
+
+  await db
+    .collection("paypalRechargeOrders")
+    .doc(paypalOrderDocumentId(order.id))
+    .create({
+      orderId: order.id,
+      uid,
+      vehicleId: normalizedVehicleId,
+      amount: rechargeAmount,
+      currency: normalizedCurrency,
+      paypalAmount,
+      paypalCurrency: PAYPAL_SANDBOX_CURRENCY,
+      conversionType: "demo_fixed_rate",
+      demoExchangeRate: DEMO_EXCHANGE_RATE_INR_TO_USD,
+      status: "PENDING",
+      createdAt: Timestamp.now(),
+    });
+
+  return {
+    success: true,
+    orderId: order.id,
+    approvalUrl: approval.href,
+    status: order.status,
+    amount: rechargeAmount,
+    currency: normalizedCurrency,
+    paypalAmount,
+    paypalCurrency: PAYPAL_SANDBOX_CURRENCY,
+    conversionType: "demo_fixed_rate",
+    demoExchangeRate: DEMO_EXCHANGE_RATE_INR_TO_USD,
+    currentBalance,
+    paypalClientId,
+    paymentProvider: "PayPal Sandbox",
+  };
+}
+
+async function capturePayPalRechargeOrder({
+  db,
+  Timestamp,
+  uid,
+  vehicleId,
+  orderId,
+  paypalClientId,
+  paypalClientSecret,
+}) {
+  const normalizedVehicleId = typeof vehicleId === "string" ? vehicleId.trim() : "";
+  const normalizedOrderId = typeof orderId === "string" ? orderId.trim() : "";
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(normalizedOrderId)) {
+    throw new Error("A valid PayPal order ID is required.");
+  }
+
+  if (!paypalClientId || !paypalClientSecret) {
+    throw new Error(
+      "PayPal Sandbox credentials are not configured for the local emulator.",
+    );
+  }
+
+  const orderRecordRef = db
+    .collection("paypalRechargeOrders")
+    .doc(paypalOrderDocumentId(normalizedOrderId));
+  const orderRecordSnapshot = await orderRecordRef.get();
+  if (!orderRecordSnapshot.exists) {
+    throw new Error("This PayPal order is not registered for capture.");
+  }
+  const orderRecord = orderRecordSnapshot.data();
+  if (orderRecord.uid !== uid || orderRecord.vehicleId !== normalizedVehicleId) {
+    throw new Error("This PayPal order does not belong to this account and vehicle.");
+  }
+  if (orderRecord.status === "COMPLETED") {
+    return {
+      success: true,
+      alreadyCaptured: true,
+      transactionId: orderRecord.transactionId,
+      vehicleId: normalizedVehicleId,
+      balanceAfter: orderRecord.balanceAfter,
+      amount: orderRecord.amount,
+      currency: orderRecord.currency,
+      paypalAmount: orderRecord.paypalAmount,
+      paypalCurrency: orderRecord.paypalCurrency,
+      conversionType: orderRecord.conversionType,
+      demoExchangeRate: orderRecord.demoExchangeRate,
+      paymentProvider: "PayPal Sandbox",
+    };
+  }
+
+  const { cardRef, cardSnapshot } = await ensureVehicleCard({
+    db,
+    uid,
+    vehicleId: normalizedVehicleId,
+  });
+
+  console.info(`[PayPal Recharge] Capturing PayPal order: ${normalizedOrderId}`);
+  const capture = await paypalRequest({
+    operation: "capture",
+    path: `/v2/checkout/orders/${encodeURIComponent(normalizedOrderId)}/capture`,
+    method: "POST",
+    paypalClientId,
+    paypalClientSecret,
+    requestId: paypalOrderDocumentId(`${normalizedOrderId}:capture`).slice(0, 36),
+    body: {},
+  });
+  const verifiedCapture = capture?.purchase_units?.[0]?.payments?.captures?.[0];
+  if (capture?.status !== "COMPLETED" || verifiedCapture?.status !== "COMPLETED") {
+    throw new Error("PayPal did not confirm a completed capture.");
+  }
+
+  const paymentAmount = Number.parseFloat(
+    verifiedCapture?.amount?.value ?? "0",
+  );
+  const paymentCurrency = verifiedCapture?.amount?.currency_code ?? "";
+
+  const validatedPaypalAmount = validateRechargeAmount(paymentAmount);
+  const normalizedPaypalCurrency = normalizeRechargeCurrency(paymentCurrency);
+  const validatedAmount = validateRechargeAmount(orderRecord.amount);
+  const normalizedCurrency = normalizeRechargeCurrency(orderRecord.currency);
+  const expectedPaypalAmount = convertInrToPaypalAmount(validatedAmount);
+  if (
+    orderRecord.conversionType !== "demo_fixed_rate" ||
+    orderRecord.demoExchangeRate !== DEMO_EXCHANGE_RATE_INR_TO_USD ||
+    orderRecord.paypalCurrency !== PAYPAL_SANDBOX_CURRENCY ||
+    orderRecord.paypalAmount !== expectedPaypalAmount ||
+    validatedPaypalAmount !== expectedPaypalAmount ||
+    normalizedPaypalCurrency !== PAYPAL_SANDBOX_CURRENCY ||
+    normalizedCurrency !== normalizeRechargeCurrency(cardSnapshot.data().currency)
+  ) {
+    throw new Error("The PayPal capture amount does not match the recharge order.");
+  }
+  console.info("[PayPal Recharge] PayPal capture completed.");
+  const captureId = verifiedCapture.id;
+  if (typeof captureId !== "string" || !captureId) {
+    throw new Error("PayPal did not return a capture ID.");
+  }
+  const transactionId = `paypal-${paypalOrderDocumentId(normalizedOrderId)}`;
+  const transactionRef = cardRef.collection("transactions").doc(transactionId);
+
+  return db.runTransaction(async (transaction) => {
+    const [freshCard, freshOrder, existingTransaction] = await Promise.all([
+      transaction.get(cardRef),
+      transaction.get(orderRecordRef),
+      transaction.get(transactionRef),
+    ]);
+    if (!freshCard.exists) {
+      throw new Error("No charging card is registered for this vehicle.");
+    }
+    if (!freshOrder.exists) {
+      throw new Error("This PayPal order is not registered for capture.");
+    }
+    const freshOrderData = freshOrder.data();
+    if (freshOrderData.uid !== uid || freshOrderData.vehicleId !== normalizedVehicleId) {
+      throw new Error("This PayPal order does not belong to this account and vehicle.");
+    }
+    if (freshOrderData.status === "COMPLETED" || existingTransaction.exists) {
+      const completed = existingTransaction.exists
+        ? existingTransaction.data()
+        : freshOrderData;
+      return {
+        success: true,
+        alreadyCaptured: true,
+        transactionId,
+        vehicleId: normalizedVehicleId,
+        balanceAfter: completed.balanceAfter,
+        amount: completed.amount,
+        currency: completed.currency,
+        paypalAmount: completed.paypalAmount,
+        paypalCurrency: completed.paypalCurrency,
+        conversionType: completed.conversionType,
+        demoExchangeRate: completed.demoExchangeRate,
+        paymentProvider: "PayPal Sandbox",
+      };
+    }
+    const freshCardData = freshCard.data();
+    const currentCardBalance =
+      typeof freshCardData.balance === "number" &&
+      Number.isFinite(freshCardData.balance)
+        ? freshCardData.balance
+        : 0;
+    const balanceAfter = Number((currentCardBalance + validatedAmount).toFixed(2));
+
+    transaction.update(cardRef, {
+      balance: balanceAfter,
+      lastRechargeAmount: validatedAmount,
+      lastRechargeDate: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+      currency: normalizedCurrency,
+    });
+
+    transaction.create(transactionRef, {
+      transactionId,
+      cardId: CARD_ID,
+      vehicleId: normalizedVehicleId,
+      type: "credit",
+      amount: validatedAmount,
+      currency: normalizedCurrency,
+      paypalAmount: validatedPaypalAmount,
+      paypalCurrency: normalizedPaypalCurrency,
+      conversionType: orderRecord.conversionType,
+      demoExchangeRate: orderRecord.demoExchangeRate,
+      balanceBefore: Number(currentCardBalance.toFixed(2)),
+      balanceAfter,
+      provider: "paypal",
+      paymentProvider: "PayPal Sandbox",
+      paypalOrderId: normalizedOrderId,
+      paypalCaptureId: captureId,
+      status: "completed",
+      description: "PayPal recharge",
+      timestamp: Timestamp.now(),
+    });
+
+    transaction.update(orderRecordRef, {
+      status: "COMPLETED",
+      captureId,
+      amount: validatedAmount,
+      currency: normalizedCurrency,
+      paypalAmount: validatedPaypalAmount,
+      paypalCurrency: normalizedPaypalCurrency,
+      conversionType: orderRecord.conversionType,
+      demoExchangeRate: orderRecord.demoExchangeRate,
+      transactionId,
+      balanceAfter,
+      completedAt: Timestamp.now(),
+    });
+
+    return {
+      success: true,
+      transactionId,
+      vehicleId: normalizedVehicleId,
+      balanceBefore: currentCardBalance,
+      balanceAfter,
+      amount: validatedAmount,
+      currency: normalizedCurrency,
+      paypalAmount: validatedPaypalAmount,
+      paypalCurrency: normalizedPaypalCurrency,
+      conversionType: orderRecord.conversionType,
+      demoExchangeRate: orderRecord.demoExchangeRate,
+      paymentProvider: "PayPal Sandbox",
+    };
+  });
+}
+
 async function debitConfirmedChargingSession({ db, Timestamp, uid, sessionId }) {
   if (
     typeof sessionId !== "string" ||
@@ -715,7 +1256,12 @@ async function syncVehicleCardSnapshots({ db, vehicleId, vehicleData }) {
 
 module.exports = {
   CARD_ID,
+  DEMO_EXCHANGE_RATE_INR_TO_USD,
   MIGRATION_TRANSACTION_LIMIT,
+  PayPalApiError,
+  capturePayPalRechargeOrder,
+  convertInrToPaypalAmount,
+  createPayPalRechargeOrder,
   debitConfirmedChargingSession,
   findVerifiedVehicle,
   getLegacyChargingCardSummary,

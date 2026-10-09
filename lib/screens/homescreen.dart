@@ -18,6 +18,7 @@ import '../services/learning_assistant_service.dart';
 import 'trip_planner.dart';
 import 'vehicle_health_page.dart';
 import 'vehicle_details_page.dart';
+import 'vehicle_controls_page.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.vehicle});
@@ -251,7 +252,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     );
                     final summary = _VehicleHealthSummary(data: data);
                     final actions = _QuickActions(
-                      onCharging: openChargingMap,
+                      onControls: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              VehicleControlsPage(vehicle: vehicle),
+                        ),
+                      ),
                       onTripPlanner: () => Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -933,13 +940,13 @@ class _SummaryDivider extends StatelessWidget {
 
 class _QuickActions extends StatelessWidget {
   const _QuickActions({
-    required this.onCharging,
+    required this.onControls,
     required this.onTripPlanner,
     required this.onHealth,
     required this.onMaintenance,
   });
 
-  final VoidCallback onCharging;
+  final VoidCallback onControls;
   final VoidCallback onTripPlanner;
   final VoidCallback onHealth;
   final VoidCallback onMaintenance;
@@ -950,12 +957,12 @@ class _QuickActions extends StatelessWidget {
       final columns = constraints.maxWidth >= 900 ? 4 : 2;
       final actions = [
         _ActionItem(
-          'Charging map',
-          'Find nearby stations',
-          Icons.ev_station_rounded,
+          'Controls',
+          'Manage your EV',
+          Icons.tune_rounded,
           const Color(0xFFE4F3ED),
           const Color(0xFF168266),
-          onCharging,
+          onControls,
         ),
         _ActionItem(
           'Trip planner',

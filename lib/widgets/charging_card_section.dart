@@ -1,11 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_theme.dart';
 import '../models/charging_card.dart';
 import '../models/vehicle.dart';
 import '../services/firestore_service.dart';
+import '../services/paypal_web_checkout_bridge.dart';
 
 class ChargingCardSection extends StatelessWidget {
   const ChargingCardSection({
@@ -224,7 +229,7 @@ class ChargingCardSection extends StatelessWidget {
           ],
           const SizedBox(height: 18),
           OutlinedButton.icon(
-            onPressed: () => _showRechargeMessage(context),
+            onPressed: () => _showRechargeMessage(context, vehicle),
             icon: const Icon(Icons.add_card_rounded),
             label: const Text('Recharge'),
           ),
@@ -273,20 +278,16 @@ class ChargingCardSection extends StatelessWidget {
     }
   }
 
-  void _showRechargeMessage(BuildContext context) {
+  void _showRechargeMessage(BuildContext context, Vehicle vehicle) {
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Recharge unavailable'),
-        content: const Text(
-          'Recharge payment service is not connected yet. Your balance has not been changed.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
+      builder: (dialogContext) => _RechargeDialog(
+        uid: uid,
+        vehicle: vehicle,
+        firestoreService: firestoreService,
+        currentBalance: firestoreService
+            .getChargingCard(uid, vehicleId: vehicle.id)
+            .then((card) => card?.balance ?? 0),
       ),
     );
   }
@@ -621,7 +622,9 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
           r'^[A-Za-z0-9]{4,32}$',
         ).hasMatch(cardNumber.replaceAll(RegExp(r'[\s-]'), ''));
     final cardHolderValid = _holderController.text.trim().isNotEmpty;
-    debugPrint('[CARD PROD DEBUG] Validation: card type valid = $cardTypeValid');
+    debugPrint(
+      '[CARD PROD DEBUG] Validation: card type valid = $cardTypeValid',
+    );
     debugPrint(
       '[CARD PROD DEBUG] Validation: card number valid = $cardNumberValid',
     );
@@ -884,6 +887,566 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
 
   String? _requiredValidator(String? value) =>
       value == null || value.trim().isEmpty ? 'This field is required.' : null;
+}
+
+class _RechargeDialog extends StatefulWidget {
+  const _RechargeDialog({
+    required this.uid,
+    required this.vehicle,
+    required this.firestoreService,
+    required this.currentBalance,
+  });
+
+  final String uid;
+  final Vehicle vehicle;
+  final FirestoreService firestoreService;
+  final Future<double> currentBalance;
+
+  @override
+  State<_RechargeDialog> createState() => _RechargeDialogState();
+}
+
+class _RechargeDialogState extends State<_RechargeDialog> {
+  static const List<double> _presetAmounts = [100, 250, 500, 1000];
+  static const double _demoExchangeRateInrToUsd = 0.012;
+
+  late double _selectedAmount;
+  bool _processing = false;
+  String? _error;
+  String? _orderId;
+  String? _approvalUrl;
+  bool _success = false;
+  double? _balanceAfter;
+  double? _paypalAmount;
+  String? _paypalClientId;
+  String? _statusMessage;
+  bool _webCheckoutReady = false;
+  bool _awaitingWebCapture = false;
+  StreamSubscription<PayPalWebCheckoutEvent>? _webCheckoutSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedAmount = _presetAmounts.first;
+    if (kIsWeb) {
+      initializePayPalWebCheckoutBridge();
+      _webCheckoutSubscription = paypalWebCheckoutEvents.listen(
+        _handleWebCheckoutEvent,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _webCheckoutSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _handleWebCheckoutEvent(PayPalWebCheckoutEvent event) {
+    if (!mounted) return;
+    switch (event.status) {
+      case PayPalWebCheckoutStatus.approved:
+        if (event.orderId != _orderId) {
+          finishPayPalWebCheckoutCapture(success: false);
+          _showError('PayPal returned an unexpected order.');
+          return;
+        }
+        _awaitingWebCapture = true;
+        unawaited(_captureApprovedOrder(event.orderId));
+        return;
+      case PayPalWebCheckoutStatus.cancelled:
+        setState(() {
+          _processing = false;
+          _statusMessage = 'Payment cancelled. You can try checkout again.';
+        });
+        return;
+      case PayPalWebCheckoutStatus.failed:
+        setState(() {
+          _processing = false;
+          _statusMessage = 'Payment failed.';
+          _error = event.message ?? 'PayPal checkout could not be completed.';
+        });
+        return;
+    }
+  }
+
+  double _verifiedBalanceAfter(Map<String, dynamic> capture) {
+    final balanceAfter = capture['balanceAfter'];
+    if (capture['success'] != true || balanceAfter is! num) {
+      throw StateError(
+        'The backend did not verify a completed PayPal capture.',
+      );
+    }
+    return balanceAfter.toDouble();
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    setState(() => _error = message);
+  }
+
+  Future<void> _createOrder() async {
+    if (_processing) return;
+    setState(() {
+      _processing = true;
+      _error = null;
+      _statusMessage = 'Creating PayPal order...';
+    });
+    try {
+      debugPrint('[PayPal Recharge] Calling createPayPalRechargeOrder');
+      final response = await widget.firestoreService.createPayPalRechargeOrder(
+        uid: widget.uid,
+        vehicleId: widget.vehicle.id,
+        amount: _selectedAmount,
+        currency: 'INR',
+      );
+      final orderId = (response['orderId'] ?? '').toString();
+      final approvalUrl = (response['approvalUrl'] ?? '').toString();
+      final paypalAmount = response['paypalAmount'];
+      final paypalClientId = (response['paypalClientId'] ?? '').toString();
+      if (orderId.isEmpty) {
+        throw StateError(
+          'The recharge request did not return a valid PayPal order.',
+        );
+      }
+      if (paypalAmount is! num) {
+        throw StateError(
+          'The recharge request did not return its PayPal Sandbox amount.',
+        );
+      }
+      setState(() {
+        _orderId = orderId;
+        _paypalAmount = paypalAmount.toDouble();
+        _paypalClientId = paypalClientId;
+      });
+
+      if (kIsWeb) {
+        await _prepareWebCheckout();
+      } else {
+        final approvalUri = Uri.tryParse(approvalUrl);
+        if (approvalUri == null ||
+            approvalUri.scheme != 'https' ||
+            (approvalUri.host != 'sandbox.paypal.com' &&
+                !approvalUri.host.endsWith('.sandbox.paypal.com'))) {
+          throw StateError(
+            'PayPal Sandbox did not return a valid approval link.',
+          );
+        }
+        setState(() {
+          _approvalUrl = approvalUrl;
+          _statusMessage = 'Waiting for approval in external PayPal checkout.';
+        });
+        final opened = await launchUrl(
+          approvalUri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (!opened) {
+          setState(() {
+            _statusMessage = 'Payment failed.';
+            _error = 'Could not open external PayPal Sandbox checkout.';
+          });
+        } else {
+          setState(() => _processing = false);
+        }
+      }
+    } catch (error) {
+      setState(() {
+        _processing = false;
+        _statusMessage = 'Payment failed.';
+        _error = error is FirebaseFunctionsException
+            ? error.message ?? error.code
+            : error.toString();
+      });
+    }
+  }
+
+  Future<void> _prepareWebCheckout() async {
+    final orderId = _orderId;
+    final clientId = _paypalClientId;
+    if (orderId == null ||
+        orderId.isEmpty ||
+        clientId == null ||
+        clientId.isEmpty) {
+      _showError('PayPal Web checkout configuration is unavailable.');
+      setState(() {
+        _processing = false;
+        _statusMessage = 'Payment failed.';
+      });
+      return;
+    }
+    setState(() {
+      _processing = true;
+      _statusMessage = 'Opening PayPal checkout...';
+      _error = null;
+    });
+    try {
+      await preparePayPalWebCheckout(clientId: clientId, orderId: orderId);
+      if (!mounted) return;
+      setState(() {
+        _webCheckoutReady = true;
+        _processing = false;
+        _statusMessage = 'PayPal popup checkout is ready.';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _processing = false;
+        _statusMessage = 'Payment failed.';
+        _error = error.toString();
+      });
+    }
+  }
+
+  void _startWebCheckout() {
+    if (_processing || !_webCheckoutReady) return;
+    setState(() {
+      _statusMessage = 'Waiting for approval...';
+      _error = null;
+    });
+    try {
+      startPayPalWebCheckout();
+    } catch (error) {
+      setState(() {
+        _statusMessage = 'Payment failed.';
+        _error = error.toString();
+      });
+    }
+  }
+
+  Future<void> _captureApprovedOrder([String? approvedOrderId]) async {
+    final orderId = _orderId;
+    if (_processing || orderId == null || orderId.isEmpty) return;
+    setState(() {
+      _processing = true;
+      _error = null;
+      _statusMessage = 'Processing payment...';
+    });
+    try {
+      debugPrint('[PayPal Recharge] Calling capturePayPalRechargeOrder');
+      final capture = await widget.firestoreService.capturePayPalRechargeOrder(
+        uid: widget.uid,
+        vehicleId: widget.vehicle.id,
+        orderId: approvedOrderId ?? orderId,
+      );
+      final balanceAfter = _verifiedBalanceAfter(capture);
+      if (_awaitingWebCapture) {
+        finishPayPalWebCheckoutCapture(success: true);
+        _awaitingWebCapture = false;
+      }
+      setState(() {
+        _success = true;
+        _balanceAfter = balanceAfter;
+        _processing = false;
+        _statusMessage = 'Payment successful.';
+      });
+    } catch (error) {
+      if (_awaitingWebCapture) {
+        finishPayPalWebCheckoutCapture(success: false);
+        _awaitingWebCapture = false;
+      }
+      setState(() {
+        _processing = false;
+        _statusMessage = 'Payment failed.';
+        _error = error is FirebaseFunctionsException
+            ? error.message ?? error.code
+            : error.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.all(20),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+          child: FutureBuilder<double>(
+            future: widget.currentBalance,
+            builder: (context, snapshot) {
+              final currentBalance = snapshot.data ?? 0.0;
+              final previewPaypalAmount = double.parse(
+                (_selectedAmount * _demoExchangeRateInrToUsd).toStringAsFixed(
+                  2,
+                ),
+              );
+              final paypalAmount = _paypalAmount ?? previewPaypalAmount;
+              if (_success) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Icon(
+                      Icons.check_circle_rounded,
+                      color: Color(0xFF16845B),
+                      size: 52,
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Recharge successful',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: AppTheme.navy,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '₹${_selectedAmount.toStringAsFixed(2)} has been added to your charging card.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: AppTheme.mutedBlue),
+                    ),
+                    const SizedBox(height: 12),
+                    _CardValue(
+                      label: 'Current balance',
+                      value: _formatMoney(
+                        _balanceAfter ?? currentBalance,
+                        'INR',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Done'),
+                    ),
+                  ],
+                );
+              }
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Recharge EV Charging Card',
+                          style: TextStyle(
+                            color: AppTheme.navy,
+                            fontSize: 21,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  _CardValue(
+                    label: 'Current balance',
+                    value: _formatMoney(currentBalance, 'INR'),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'Select amount',
+                    style: TextStyle(
+                      color: AppTheme.navy,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final amount in _presetAmounts)
+                        ChoiceChip(
+                          label: Text('₹${amount.toStringAsFixed(0)}'),
+                          selected: _selectedAmount == amount,
+                          onSelected: _processing
+                              ? null
+                              : (_) => setState(() => _selectedAmount = amount),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  TextFormField(
+                    initialValue: _selectedAmount.toStringAsFixed(2),
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Custom amount',
+                      prefixText: '₹ ',
+                    ),
+                    onChanged: _processing
+                        ? null
+                        : (value) {
+                            final parsed = double.tryParse(value);
+                            if (parsed != null && parsed > 0) {
+                              setState(() => _selectedAmount = parsed);
+                            }
+                          },
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF3F6F9),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text(
+                          'Payment summary',
+                          style: TextStyle(
+                            color: AppTheme.navy,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text('Charging Card Recharge'),
+                            ),
+                            Text(_formatMoney(_selectedAmount, 'INR')),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text('PayPal Sandbox Amount'),
+                            ),
+                            Text('${_formatMoney(paypalAmount, 'USD')} USD'),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            const Expanded(child: Text('Provider')),
+                            const Text('PayPal Sandbox'),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            const Expanded(child: Text('Conversion')),
+                            Text(
+                              'Demo fixed rate (DEMO ONLY): '
+                              '₹1 = \$${_demoExchangeRateInrToUsd.toStringAsFixed(3)}',
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  if (_orderId != null &&
+                      !kIsWeb &&
+                      _approvalUrl != null &&
+                      _approvalUrl!.isNotEmpty) ...[
+                    Text(
+                      'External PayPal approval (Android/iOS): complete the '
+                      'checkout, return here, and confirm capture.',
+                      style: const TextStyle(color: AppTheme.mutedBlue),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _error!,
+                      style: const TextStyle(color: Colors.redAccent),
+                    ),
+                  ],
+                  if (_statusMessage != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _statusMessage!,
+                      style: const TextStyle(color: AppTheme.mutedBlue),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  if (_orderId == null) ...[
+                    FilledButton.icon(
+                      onPressed: _processing ? null : _createOrder,
+                      icon: const Icon(Icons.lock_open_rounded),
+                      label: _processing
+                          ? const SizedBox(
+                              height: 18,
+                              width: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Continue to PayPal'),
+                    ),
+                  ] else if (kIsWeb) ...[
+                    FilledButton.icon(
+                      onPressed: _processing
+                          ? null
+                          : _webCheckoutReady
+                          ? _startWebCheckout
+                          : _prepareWebCheckout,
+                      icon: const Icon(Icons.payments_rounded),
+                      label: _processing
+                          ? const SizedBox(
+                              height: 18,
+                              width: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(
+                              _webCheckoutReady
+                                  ? 'Pay with PayPal'
+                                  : 'Prepare PayPal checkout',
+                            ),
+                    ),
+                  ] else ...[
+                    FilledButton.icon(
+                      onPressed: _processing ? null : _captureApprovedOrder,
+                      icon: const Icon(Icons.check_circle_outline_rounded),
+                      label: _processing
+                          ? const SizedBox(
+                              height: 18,
+                              width: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Confirm payment capture'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton.icon(
+                      onPressed: _processing
+                          ? null
+                          : () async {
+                              final uri = Uri.tryParse(_approvalUrl ?? '');
+                              if (uri != null &&
+                                  uri.scheme == 'https' &&
+                                  (uri.host == 'sandbox.paypal.com' ||
+                                      uri.host.endsWith(
+                                        '.sandbox.paypal.com',
+                                      )) &&
+                                  mounted) {
+                                final opened = await launchUrl(
+                                  uri,
+                                  mode: LaunchMode.externalApplication,
+                                );
+                                if (!opened) {
+                                  _showError(
+                                    'Could not open PayPal Sandbox checkout.',
+                                  );
+                                }
+                              }
+                            },
+                      icon: const Icon(Icons.open_in_new_rounded),
+                      label: const Text('Open PayPal checkout'),
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _RecentTransactionSummary extends StatelessWidget {
@@ -1234,6 +1797,23 @@ class _TransactionTile extends StatelessWidget {
       'Station: ${transaction.stationName ?? 'Not available'}',
       'Operator: ${transaction.operator ?? 'Not available'}',
       'Vehicle: ${transaction.vehicleId ?? 'Not available'}',
+      'Provider: ${transaction.paymentProvider ?? 'Not available'}',
+      'Status: ${transaction.status ?? 'Not available'}',
+      if (transaction.paypalAmount != null &&
+          transaction.paypalCurrency != null &&
+          amount != null)
+        'Recharge: ${_formatMoney(amount, transaction.currency)}',
+      if (transaction.paypalAmount != null &&
+          transaction.paypalCurrency != null)
+        'PayPal payment: ${_formatMoney(transaction.paypalAmount!, transaction.paypalCurrency)} ${transaction.paypalCurrency}',
+      if (transaction.conversionType == 'demo_fixed_rate' &&
+          transaction.demoExchangeRate != null)
+        'Conversion: Demo fixed rate (DEMO ONLY), '
+            '₹1 = \$${transaction.demoExchangeRate!.toStringAsFixed(3)}',
+      if (transaction.paypalOrderId != null)
+        'PayPal order ID: ${transaction.paypalOrderId}',
+      if (transaction.paypalCaptureId != null)
+        'PayPal capture ID: ${transaction.paypalCaptureId}',
       'Balance before: ${transaction.balanceBefore == null ? 'Not available' : _formatMoney(transaction.balanceBefore!, transaction.currency)}',
       'Balance after: ${transaction.balanceAfter == null ? 'Not available' : _formatMoney(transaction.balanceAfter!, transaction.currency)}',
     ];

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../models/charging_card.dart';
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
+import '../models/vehicle_controls.dart';
 import '../models/vehicle_health.dart';
 import '../models/vehicle_telemetry.dart';
 
@@ -27,6 +28,15 @@ class FirestoreService {
       .doc(vehicleId)
       .collection('chargingCard')
       .doc('current');
+
+  DocumentReference<Map<String, dynamic>> _vehicleControlsPreferencesDocument(
+    String uid,
+    String vehicleId,
+  ) => _userDocument(uid)
+      .collection('vehicles')
+      .doc(vehicleId)
+      .collection('controls')
+      .doc('preferences');
 
   CollectionReference<Map<String, dynamic>> _chargingTransactions(
     String uid,
@@ -293,6 +303,58 @@ class FirestoreService {
       return null;
     }
     return vehicle;
+  }
+
+  Future<Map<String, dynamic>> createPayPalRechargeOrder({
+    required String uid,
+    required String vehicleId,
+    required double amount,
+    String currency = 'INR',
+  }) async {
+    _requireCurrentUser(uid);
+    await _requireOwnedVehicle(uid, vehicleId);
+    final normalizedAmount = amount.isFinite ? amount : 0;
+    if (normalizedAmount <= 0) {
+      throw ArgumentError('Recharge amount must be greater than zero.');
+    }
+    final response = await _functions
+        .httpsCallable('createPayPalRechargeOrder')
+        .call<Map<String, dynamic>>({
+          'vehicleId': vehicleId,
+          'amount': normalizedAmount,
+          'currency': currency.trim().toUpperCase().isEmpty
+              ? 'INR'
+              : currency.trim().toUpperCase(),
+        });
+    return Map<String, dynamic>.from(response.data);
+  }
+
+  Future<Map<String, dynamic>> capturePayPalRechargeOrder({
+    required String uid,
+    required String vehicleId,
+    required String orderId,
+  }) async {
+    final isAuthenticated = FirebaseAuth.instance.currentUser?.uid == uid;
+    debugPrint(
+      '[PayPal Recharge] capture request authenticated: $isAuthenticated',
+    );
+    _requireCurrentUser(uid);
+    await _requireOwnedVehicle(uid, vehicleId);
+    final normalizedOrderId = orderId.trim();
+    if (normalizedOrderId.isEmpty) {
+      throw ArgumentError.value(
+        orderId,
+        'orderId',
+        'A PayPal order ID is required.',
+      );
+    }
+    final response = await _functions
+        .httpsCallable('capturePayPalRechargeOrder')
+        .call<Map<String, dynamic>>({
+          'vehicleId': vehicleId,
+          'orderId': normalizedOrderId,
+        });
+    return Map<String, dynamic>.from(response.data);
   }
 
   Stream<List<ChargingTransaction>> watchChargingTransactions(
@@ -844,6 +906,48 @@ class FirestoreService {
         }
         return profile;
       });
+
+  Future<VehicleControlsPreferences> getVehicleControlsPreferences({
+    required String uid,
+    required String vehicleId,
+  }) async {
+    _requireCurrentUser(uid);
+    await _requireOwnedVehicle(uid, vehicleId);
+    final snapshot = await _vehicleControlsPreferencesDocument(
+      uid,
+      vehicleId,
+    ).get();
+    final data = snapshot.data();
+    if (!snapshot.exists || data == null) {
+      final userSnapshot = await _userDocument(uid).get();
+      final userData = userSnapshot.data();
+      final legacyPreferences = userData?['preferences'];
+      if (userData?['vehicleId'] == vehicleId && legacyPreferences is Map) {
+        return VehicleControlsPreferences.fromMap(
+          legacyPreferences['vehicleControls'],
+        );
+      }
+      return const VehicleControlsPreferences();
+    }
+    if (data['vehicleId'] != vehicleId || data['preferences'] is! Map) {
+      throw StateError('Vehicle controls preferences have an invalid scope.');
+    }
+    return VehicleControlsPreferences.fromMap(data['preferences']);
+  }
+
+  Future<void> saveVehicleControlsPreferences({
+    required String uid,
+    required String vehicleId,
+    required VehicleControlsPreferences preferences,
+  }) async {
+    _requireCurrentUser(uid);
+    await _requireOwnedVehicle(uid, vehicleId);
+    await _vehicleControlsPreferencesDocument(uid, vehicleId).set({
+      'vehicleId': vehicleId,
+      'preferences': preferences.toMap(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
 
   Future<void> updateUserProfile({
     required String uid,
