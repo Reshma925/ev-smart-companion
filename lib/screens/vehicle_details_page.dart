@@ -3,12 +3,12 @@ import 'package:flutter/material.dart';
 
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
-import '../models/vehicle_telemetry.dart';
 import '../services/auth_service.dart';
 import '../services/distance_unit_service.dart';
 import '../services/firestore_service.dart';
 import '../widgets/common_widgets.dart';
-import 'bluetooth_scanning_page.dart';
+import '../widgets/vehicle_ble_state_view.dart';
+import 'auth_gate.dart';
 
 class VehicleDetailsPage extends StatefulWidget {
   const VehicleDetailsPage({super.key, this.pendingSignup, this.vehicle});
@@ -110,7 +110,6 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
       }
 
       final existingProfile = await firestoreService.getUserProfile(user.uid);
-      late final Vehicle verifiedVehicle;
       if (existingProfile == null) {
         final profileName = signup?.name.trim().isNotEmpty == true
             ? signup!.name.trim()
@@ -123,7 +122,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
         }
 
         profileProvisioningAttempted = true;
-        verifiedVehicle = await firestoreService.verifyAndCreateUserProfile(
+        await firestoreService.verifyAndCreateUserProfile(
           uid: user.uid,
           name: profileName,
           email: user.email ?? signup?.email ?? '',
@@ -146,16 +145,13 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
             'These details do not match the vehicle connected to this account.',
           );
         }
-        verifiedVehicle = vehicle;
       }
 
       if (!mounted) return;
 
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(
-          builder: (_) => BluetoothScanningPage(vehicle: verifiedVehicle),
-        ),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
         (route) => false,
       );
     } catch (error, stackTrace) {
@@ -194,8 +190,8 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
           : '',
     );
     final capacityController = TextEditingController(
-      text: vehicle.batteryCapacityKwh != null &&
-              vehicle.batteryCapacityKwh! > 0
+      text:
+          vehicle.batteryCapacityKwh != null && vehicle.batteryCapacityKwh! > 0
           ? vehicle.batteryCapacityKwh.toString()
           : '',
     );
@@ -413,14 +409,16 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                     ),
                     _InfoTile(
                       label: 'Maximum rated range',
-                      value: vehicle.maximumRangeKm != null &&
+                      value:
+                          vehicle.maximumRangeKm != null &&
                               vehicle.maximumRangeKm! > 0
                           ? _formatRange(vehicle.maximumRangeKm!)
                           : 'Not available',
                     ),
                     _InfoTile(
                       label: 'Battery capacity',
-                      value: vehicle.batteryCapacityKwh != null &&
+                      value:
+                          vehicle.batteryCapacityKwh != null &&
                               vehicle.batteryCapacityKwh! > 0
                           ? '${vehicle.batteryCapacityKwh} kWh'
                           : 'Not available',
@@ -437,31 +435,24 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                 ),
               ),
               const SizedBox(height: 14),
-              StreamBuilder<VehicleData?>(
-                stream: firestoreService.watchVehicleTelemetry(vehicle.id),
-                builder: (context, snapshot) {
-                  if (snapshot.hasError) {
-                    return const _InfoTile(
-                      label: 'Live battery and range',
-                      value: 'Could not load telemetry from Firebase',
-                    );
-                  }
-                  if (!snapshot.hasData) {
-                    return const _InfoTile(
-                      label: 'Live battery and range',
-                      value: 'Not available',
-                    );
-                  }
-                  final telemetry = snapshot.data!;
+              VehicleBleStateView(
+                builder: (context, client, snapshot) {
+                  final state = snapshot?.vehicleId == vehicle.id
+                      ? snapshot?.state
+                      : null;
                   return Column(
                     children: [
                       _InfoTile(
                         label: 'Current battery',
-                        value: '${telemetry.battery.toStringAsFixed(0)}%',
+                        value: state == null
+                            ? 'N/A — connect to the simulator'
+                            : '${state.batteryPercent.toStringAsFixed(0)}%',
                       ),
                       _InfoTile(
                         label: 'Current estimated range',
-                        value: _formatRange(telemetry.range),
+                        value: state == null
+                            ? 'N/A — connect to the simulator'
+                            : _formatRange(state.rangeKm),
                       ),
                     ],
                   );

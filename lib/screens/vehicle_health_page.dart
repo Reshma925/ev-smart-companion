@@ -4,12 +4,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
 import 'package:model_viewer_pro/model_viewer_pro.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../models/vehicle_health.dart';
 import '../models/vehicle_telemetry.dart';
 import '../services/firestore_service.dart';
+import '../widgets/vehicle_ble_state_view.dart';
 import '../services/vehicle_model_load_bridge_stub.dart'
     if (dart.library.js_interop) '../services/vehicle_model_load_bridge_web.dart'
     as model_bridge;
@@ -41,8 +43,6 @@ class VehicleHealthPage extends StatefulWidget {
 class _VehicleHealthPageState extends State<VehicleHealthPage> {
   late final FirestoreService _firestore =
       widget.firestoreService ?? FirestoreService();
-  late final Stream<VehicleData?> _telemetryStream = _firestore
-      .watchVehicleTelemetry(widget.vehicle.id);
   late final Stream<List<VehicleMaintenanceRecord>> _maintenanceStream =
       _firestore.watchVehicleMaintenanceRecords(widget.vehicle.id);
 
@@ -54,31 +54,16 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
         title: const Text('Vehicle health'),
         backgroundColor: AppTheme.background,
       ),
-      body: StreamBuilder<VehicleData?>(
-        stream: _telemetryStream,
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return _LoadState(
-              title: 'Unable to load vehicle health',
-              message:
-                  'Vehicle telemetry could not be read. Check your '
-                  'connection and retry.',
-              onRetry: () => setState(() {}),
-            );
-          }
-          if (!snapshot.hasData &&
-              snapshot.connectionState != ConnectionState.active) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final telemetry = snapshot.data;
-          final health = telemetry == null
-              ? null
-              : VehicleHealthData.fromTelemetry(telemetry);
-          final lastUpdated = telemetry?.updatedAt == null
-              ? 'Update time unavailable'
-              : 'Updated ${MaterialLocalizations.of(context).formatMediumDate(telemetry!.updatedAt!.toLocal())}';
-
+      body: VehicleBleStateView(
+        builder: (context, client, snapshot) {
+          final matchingSnapshot = snapshot?.vehicleId == widget.vehicle.id
+              ? snapshot
+              : null;
+          const VehicleData? telemetry = null;
+          const VehicleHealthData? health = null;
+          final lastUpdated = matchingSnapshot == null
+              ? 'No live simulator packet'
+              : 'Simulator packet ${matchingSnapshot.sequence}';
           return StreamBuilder<List<VehicleMaintenanceRecord>>(
             stream: _maintenanceStream,
             builder: (context, maintenanceSnapshot) {
@@ -105,6 +90,8 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                                   'efficiency and service history.',
                             ),
                             const SizedBox(height: 17),
+                            _HealthLiveSnapshot(snapshot: matchingSnapshot),
+                            const SizedBox(height: 14),
                             _HealthScorePanel(health: health),
                             const SizedBox(height: 16),
                             _VehicleModelCard(
@@ -121,15 +108,15 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                             _ComponentGrid(
                               health: health,
                               telemetry: telemetry,
+                              liveState: matchingSnapshot?.state,
                               wide: wide,
                             ),
                             const SizedBox(height: 25),
                             _BatterySection(
                               health: health,
                               telemetry: telemetry,
-                              capacityKwh:
-                                  widget.vehicle.batteryCapacityKwh ??
-                                  telemetry?.batteryCapacityKwh,
+                              liveState: matchingSnapshot?.state,
+                              capacityKwh: null,
                             ),
                             const SizedBox(height: 25),
                             _MotorSection(health: health, telemetry: telemetry),
@@ -138,7 +125,10 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                             const SizedBox(height: 25),
                             _BrakeSection(health: health, telemetry: telemetry),
                             const SizedBox(height: 25),
-                                       _SoftwareSection(health: health, telemetry: telemetry),
+                            _SoftwareSection(
+                              health: health,
+                              telemetry: telemetry,
+                            ),
                             const SizedBox(height: 25),
                             _DrivingEfficiencySection(
                               health: health,
@@ -146,7 +136,7 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                               wide: wide,
                             ),
                             const SizedBox(height: 25),
-                                                        _RangeImpactSection(telemetry: telemetry),
+                            _RangeImpactSection(telemetry: telemetry),
                             const SizedBox(height: 25),
                             const _TripEfficiencySection(),
                             const SizedBox(height: 25),
@@ -163,8 +153,8 @@ class _VehicleHealthPageState extends State<VehicleHealthPage> {
                                     component,
                                     telemetry,
                                     health,
-                                    widget.vehicle.batteryCapacityKwh ??
-                                        telemetry?.batteryCapacityKwh,
+                                    null,
+                                    matchingSnapshot?.state,
                                   ),
                             ),
                             const SizedBox(height: 25),
@@ -221,16 +211,17 @@ void _showComponentDetails(
   VehicleHealthComponent component,
   VehicleData? telemetry,
   VehicleHealthData? health,
-  double? capacityKwh,
-) {
+  double? capacityKwh, [
+  VehicleControlState? liveState,
+]) {
   final score = health?.component(component).score;
   final details = switch (component) {
     VehicleHealthComponent.battery => <(String, String)>[
       ('Health', _percent(score)),
-      ('Current charge', _percent(telemetry?.battery)),
+      ('Current charge', _percent(liveState?.batteryPercent)),
       ('Temperature', _temperature(telemetry?.batteryTemperatureC)),
       ('Capacity', _quantity(capacityKwh, unit: 'kWh', decimals: 1)),
-      ('Estimated range', _quantity(telemetry?.range, unit: 'km')),
+      ('Estimated range', _quantity(liveState?.rangeKm, unit: 'km')),
       ('Battery age', _age(telemetry?.batteryAgeMonths)),
       ('Charging cycles', _quantity(telemetry?.chargingCycles)),
       ('Charging efficiency', 'Not reported'),
@@ -267,7 +258,7 @@ void _showComponentDetails(
     ],
     VehicleHealthComponent.brakes => <(String, String)>[
       ('Health', _percent(score)),
-            (
+      (
         'Brake-pad life',
         telemetry?.frontBrakePadLifePercent == null &&
                 telemetry?.rearBrakePadLifePercent == null
@@ -284,11 +275,14 @@ void _showComponentDetails(
       ),
     ],
     VehicleHealthComponent.software => <(String, String)>[
-           (
+      (
         'Vehicle software',
         telemetry?.vehicleSoftwareVersion ?? 'Version not reported',
       ),
-      ('Infotainment', telemetry?.infotainmentVersion ?? 'Version not reported'),
+      (
+        'Infotainment',
+        telemetry?.infotainmentVersion ?? 'Version not reported',
+      ),
       ('Firmware', telemetry?.firmwareVersion ?? 'Version not reported'),
       ('Security status', telemetry?.securityStatus ?? 'Not reported'),
     ],
@@ -416,6 +410,70 @@ String _statusLabel(VehicleHealthStatus status) => switch (status) {
   VehicleHealthStatus.unavailable => 'NO DATA',
 };
 
+class _HealthLiveSnapshot extends StatelessWidget {
+  const _HealthLiveSnapshot({required this.snapshot});
+
+  final VehicleStateSnapshot? snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = snapshot?.state;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Wrap(
+          spacing: 22,
+          runSpacing: 12,
+          children: [
+            _LiveValue(
+              label: 'Battery',
+              value: state == null ? 'N/A' : '${state.batteryPercent.round()}%',
+            ),
+            _LiveValue(
+              label: 'Range',
+              value: state == null ? 'N/A' : '${state.rangeKm.round()} km',
+            ),
+            _LiveValue(
+              label: 'Speed',
+              value: state == null ? 'N/A' : '${state.speedKph.round()} km/h',
+            ),
+            const _LiveValue(label: 'Battery health', value: 'N/A'),
+            const _LiveValue(label: 'Motor temperature', value: 'N/A'),
+            const _LiveValue(label: 'Tire condition', value: 'N/A'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LiveValue extends StatelessWidget {
+  const _LiveValue({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 140,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
+        const SizedBox(height: 3),
+        Text(
+          value,
+          style: const TextStyle(
+            color: _ink,
+            fontWeight: FontWeight.w700,
+            fontSize: 16,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _HealthScorePanel extends StatelessWidget {
   const _HealthScorePanel({required this.health});
 
@@ -495,7 +553,7 @@ class _HealthScorePanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 7),
                 Text(
-                  health?.overallStatus ?? 'WAITING FOR VEHICLE DATA',
+                  health?.overallStatus ?? 'STATUS UNAVAILABLE',
                   style: TextStyle(
                     color: color,
                     fontSize: 16,
@@ -505,8 +563,7 @@ class _HealthScorePanel extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   score == null
-                      ? 'The health score will be calculated from available '
-                            'component readings.'
+                      ? 'Health indicators are not included in the simulator BLE feed.'
                       : 'Calculated from reported battery, motor, tire, brake '
                             'and software health values.',
                   style: const TextStyle(
@@ -528,11 +585,13 @@ class _ComponentGrid extends StatelessWidget {
   const _ComponentGrid({
     required this.health,
     required this.telemetry,
+    required this.liveState,
     required this.wide,
   });
 
   final VehicleHealthData? health;
   final VehicleData? telemetry;
+  final VehicleControlState? liveState;
   final bool wide;
 
   @override
@@ -562,6 +621,7 @@ class _ComponentGrid extends StatelessWidget {
             telemetry,
             health,
             telemetry?.batteryCapacityKwh,
+            liveState,
           ),
         );
       },
@@ -640,11 +700,13 @@ class _BatterySection extends StatelessWidget {
   const _BatterySection({
     required this.health,
     required this.telemetry,
+    required this.liveState,
     required this.capacityKwh,
   });
 
   final VehicleHealthData? health;
   final VehicleData? telemetry;
+  final VehicleControlState? liveState;
   final double? capacityKwh;
 
   @override
@@ -669,7 +731,11 @@ class _BatterySection extends StatelessWidget {
                   _MetricChip(label: 'Health', value: _percent(score)),
                   _MetricChip(
                     label: 'Current charge',
-                    value: _percent(telemetry?.battery),
+                    value: _percent(liveState?.batteryPercent),
+                  ),
+                  _MetricChip(
+                    label: 'Estimated range',
+                    value: _quantity(liveState?.rangeKm, unit: 'km'),
                   ),
                   _MetricChip(
                     label: 'Temperature',
@@ -744,17 +810,18 @@ class _MotorSection extends StatelessWidget {
               label: 'Temperature',
               value: _temperature(telemetry?.motorTemperatureC),
             ),
-                       _MetricChip(
+            _MetricChip(
               label: 'Efficiency',
               value: _percent(telemetry?.motorEfficiencyPercent),
             ),
             _MetricChip(
               label: 'Load / RPM',
-              value: telemetry?.motorLoadPercent == null &&
+              value:
+                  telemetry?.motorLoadPercent == null &&
                       telemetry?.motorRpm == null
                   ? 'Not reported'
                   : '${_percent(telemetry?.motorLoadPercent)} · '
-                      '${_quantity(telemetry?.motorRpm, unit: 'rpm')}',
+                        '${_quantity(telemetry?.motorRpm, unit: 'rpm')}',
             ),
             _MetricChip(
               label: 'Operating hours',
@@ -1004,7 +1071,7 @@ class _BrakeSection extends StatelessWidget {
                 spacing: 9,
                 runSpacing: 9,
                 children: [
-                                   _MetricChip(
+                  _MetricChip(
                     label: 'Front pad life',
                     value: _percent(telemetry?.frontBrakePadLifePercent),
                   ),
@@ -1015,7 +1082,7 @@ class _BrakeSection extends StatelessWidget {
                   _MetricChip(
                     label: 'Brake fluid',
                     value: telemetry?.brakeFluidStatus ?? 'Not reported',
-                  ), 
+                  ),
                 ],
               ),
               const SizedBox(height: 9),
@@ -1033,7 +1100,6 @@ class _BrakeSection extends StatelessWidget {
 }
 
 class _SoftwareSection extends StatelessWidget {
-  
   const _SoftwareSection({required this.health, required this.telemetry});
 
   final VehicleHealthData? health;
@@ -1055,7 +1121,7 @@ class _SoftwareSection extends StatelessWidget {
             runSpacing: 9,
             children: [
               _MetricChip(label: 'Health', value: _percent(score)),
-                            _MetricChip(
+              _MetricChip(
                 label: 'Vehicle software',
                 value: telemetry?.vehicleSoftwareVersion ?? 'Not reported',
               ),
@@ -1175,8 +1241,7 @@ class _RangeImpactSection extends StatelessWidget {
         impact?.values.fold<double>(0, (sum, value) => sum + value) ?? 0;
     final entries = impact == null || total <= 0
         ? const <MapEntry<String, double>>[]
-        : (impact.entries.toList()
-            ..sort((a, b) => b.value.compareTo(a.value)));
+        : (impact.entries.toList()..sort((a, b) => b.value.compareTo(a.value)));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1231,8 +1296,7 @@ class _RangeImpactSection extends StatelessWidget {
                                 value: entry.value / total,
                                 minHeight: 8,
                                 backgroundColor: const Color(0xFFEAF0F4),
-                                valueColor:
-                                    const AlwaysStoppedAnimation(_blue),
+                                valueColor: const AlwaysStoppedAnimation(_blue),
                               ),
                             ),
                           ],
@@ -2326,52 +2390,5 @@ class _IconBadge extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
     ),
     child: Icon(icon, color: color, size: 18),
-  );
-}
-
-class _LoadState extends StatelessWidget {
-  const _LoadState({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-  });
-
-  final String title;
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(28),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.cloud_off_rounded, color: _muted, size: 38),
-          const SizedBox(height: 13),
-          Text(
-            title,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: _ink,
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(height: 7),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: _muted, fontSize: 13, height: 1.45),
-          ),
-          const SizedBox(height: 16),
-          OutlinedButton.icon(
-            onPressed: onRetry,
-            icon: const Icon(Icons.refresh_rounded),
-            label: const Text('RETRY'),
-          ),
-        ],
-      ),
-    ),
   );
 }

@@ -10,6 +10,29 @@ import 'package:flutter_application_2/services/vehicle_ble_web_adapter_interface
 
 void main() {
   group('Web Bluetooth vehicle bridge', () {
+    test('does not initiate BLE without an authenticated session', () async {
+      final adapter = _FakeWebAdapter();
+      final client = VehicleBleClient(
+        webAdapter: adapter,
+        authenticationCheck: () => false,
+      );
+      addTearDown(client.dispose);
+
+      await expectLater(
+        client.start('vehicle-1'),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            'Sign in before connecting to a vehicle.',
+          ),
+        ),
+      );
+
+      expect(adapter.requestDeviceArguments, isEmpty);
+      expect(adapter.connections, isEmpty);
+    });
+
     test(
       'selects a device, validates live state and frames commands',
       () async {
@@ -91,28 +114,206 @@ void main() {
       },
     );
 
-    test('drops stale and wrong-vehicle snapshots', () async {
-      final adapter = _FakeWebAdapter();
+    test(
+      'rejects an insecure Web Bluetooth context before requesting a device',
+      () async {
+        final adapter = _FakeWebAdapter()..secureContext = false;
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+
+        await client.start('vehicle-1');
+
+        expect(client.phase, VehicleBlePhase.unsupported);
+        expect(client.error, contains('HTTPS or localhost'));
+        expect(adapter.requestDeviceArguments, isEmpty);
+      },
+    );
+
+    test(
+      'rejects a missing selected vehicle document ID before BLE access',
+      () async {
+        final adapter = _FakeWebAdapter();
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+
+        await expectLater(client.start('  '), throwsArgumentError);
+        expect(adapter.requestDeviceArguments, isEmpty);
+      },
+    );
+
+    test(
+      'reports blocked policy and unavailable Bluetooth during capability check',
+      () async {
+        final blockedAdapter = _FakeWebAdapter()..policyStatus = 'blocked';
+        final blockedClient = VehicleBleClient(webAdapter: blockedAdapter);
+        addTearDown(blockedClient.dispose);
+        await blockedClient.inspectWebCapabilities();
+        expect(blockedClient.phase, VehicleBlePhase.unsupported);
+        expect(blockedClient.error, contains('permissions policy'));
+
+        final unavailableAdapter = _FakeWebAdapter()
+          ..availabilityStatus = 'unavailable';
+        final unavailableClient = VehicleBleClient(
+          webAdapter: unavailableAdapter,
+        );
+        addTearDown(unavailableClient.dispose);
+        await unavailableClient.inspectWebCapabilities();
+        expect(unavailableClient.phase, VehicleBlePhase.error);
+        expect(unavailableClient.error, contains('Bluetooth is unavailable'));
+      },
+    );
+
+    test(
+      'rejects a genuine vehicle document ID mismatch and stops the link',
+      () async {
+        final adapter = _FakeWebAdapter();
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+        await client.start('vehicle-1');
+
+        adapter.connections.single.emitSnapshot(
+          _snapshot(vehicleId: 'vehicle-1', sequence: 4, battery: 51),
+        );
+        adapter.connections.single.emitSnapshot(
+          _snapshot(vehicleId: 'vehicle-1', sequence: 3, battery: 22),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(client.snapshot.value?.state.batteryPercent, 51);
+
+        adapter.connections.single.emitSnapshot(
+          _snapshot(vehicleId: 'different-vehicle', sequence: 5, battery: 10),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(client.phase, VehicleBlePhase.identityMismatch);
+        expect(
+          client.error,
+          contains('selected vehicle document ID "vehicle-1"'),
+        );
+        expect(client.error, contains('simulator reports "different-vehicle"'));
+        expect(client.snapshot.value, isNull);
+        expect(adapter.connections.single.closed, isTrue);
+      },
+    );
+
+    test(
+      'terminates initial connection on identity mismatch without timeout retry',
+      () async {
+        final adapter = _FakeWebAdapter()..simulatorVehicleId = 'EV002';
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+
+        await client.start('EV001');
+
+        expect(client.phase, VehicleBlePhase.identityMismatch);
+        expect(client.error, contains('selected vehicle document ID "EV001"'));
+        expect(client.error, contains('simulator reports "EV002"'));
+        expect(client.lastDataUpdate, isNull);
+        expect(client.snapshot.value, isNull);
+        expect(adapter.requestDeviceArguments, [true]);
+        expect(adapter.connections.single.closed, isTrue);
+      },
+    );
+
+    test(
+      'matches against the vehicle document ID, not the peripheral name',
+      () async {
+        final adapter = _FakeWebAdapter()..simulatorVehicleId = 'EV001';
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+
+        await client.start('EV001');
+
+        expect(client.selectedDeviceName, 'EV-Simulator-01');
+        expect(client.phase, VehicleBlePhase.connected);
+        expect(client.snapshot.value?.vehicleId, 'EV001');
+      },
+    );
+
+    test(
+      'reports a missing simulator identity as invalid telemetry, not mismatch',
+      () async {
+        final adapter = _FakeWebAdapter()..simulatorVehicleId = 'EV001';
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+        await client.start('EV001');
+        final lastUpdate = client.lastDataUpdate;
+
+        adapter.connections.single.emitRawMessage(
+          '{"v":1,"type":"state","sequence":2,"timestampMillis":200,"state":{}}',
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(client.phase, VehicleBlePhase.connected);
+        expect(client.error, isNull);
+        expect(client.lastDataUpdate, lastUpdate);
+      },
+    );
+
+    test(
+      'shows awaiting telemetry until the first delayed valid snapshot arrives',
+      () async {
+        final adapter = _FakeWebAdapter()
+          ..initialTelemetryDelay = const Duration(milliseconds: 40);
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+
+        final connecting = client.start('vehicle-1');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(client.phase, VehicleBlePhase.awaitingTelemetry);
+        expect(client.snapshot.value, isNull);
+        expect(client.lastDataUpdate, isNull);
+
+        await connecting;
+        expect(client.phase, VehicleBlePhase.connected);
+        expect(client.lastDataUpdate, isNotNull);
+      },
+    );
+
+    test(
+      'reuses no stale vehicle identity when switching selected records',
+      () async {
+        final adapter = _FakeWebAdapter()..simulatorVehicleId = 'EV001';
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+        await client.start('EV001');
+
+        await client.start('EV002');
+
+        expect(adapter.requestDeviceArguments, [true, false]);
+        expect(client.phase, VehicleBlePhase.identityMismatch);
+        expect(client.error, contains('selected vehicle document ID "EV002"'));
+        expect(client.error, contains('simulator reports "EV001"'));
+      },
+    );
+
+    test(
+      'repeated connect for the same live vehicle does not duplicate connection',
+      () async {
+        final adapter = _FakeWebAdapter()..simulatorVehicleId = 'EV001';
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+        await client.start('EV001');
+
+        await client.start('EV001');
+
+        expect(adapter.requestDeviceArguments, [true]);
+        expect(adapter.connections, hasLength(1));
+      },
+    );
+
+    test('reports GATT service discovery failure distinctly', () async {
+      final adapter = _FakeWebAdapter()
+        ..connectError = StateError(
+          'GATT_SERVICE_DISCOVERY: service not found',
+        );
       final client = VehicleBleClient(webAdapter: adapter);
       addTearDown(client.dispose);
-      await client.start('vehicle-1');
 
-      adapter.connections.single.emitSnapshot(
-        _snapshot(vehicleId: 'vehicle-1', sequence: 4, battery: 51),
-      );
-      adapter.connections.single.emitSnapshot(
-        _snapshot(vehicleId: 'vehicle-1', sequence: 3, battery: 22),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(client.snapshot.value?.state.batteryPercent, 51);
+      await client.start('EV001');
 
-      adapter.connections.single.emitSnapshot(
-        _snapshot(vehicleId: 'different-vehicle', sequence: 5, battery: 10),
-      );
-      await Future<void>.delayed(Duration.zero);
       expect(client.phase, VehicleBlePhase.error);
-      expect(client.error, contains('different vehicle'));
-      expect(client.snapshot.value?.state.batteryPercent, 51);
+      expect(client.error, contains('GATT service could not be discovered'));
+      expect(client.isConnected, isFalse);
     });
 
     test('reconnects the previously selected device after link loss', () async {
@@ -162,9 +363,20 @@ class _FakeWebAdapter implements VehicleBleWebAdapter {
   final List<bool> requestDeviceArguments = [];
   Object? connectError;
   bool _hasSelectedDevice = false;
+  bool secureContext = true;
+  String policyStatus = 'allowed';
+  String availabilityStatus = 'available';
+  String simulatorVehicleId = 'vehicle-1';
+  Duration initialTelemetryDelay = Duration.zero;
 
   @override
   bool get isSupported => true;
+
+  @override
+  bool get isSecureContext => secureContext;
+
+  @override
+  String get bluetoothPolicyStatus => policyStatus;
 
   @override
   bool get hasSelectedDevice => _hasSelectedDevice;
@@ -174,16 +386,25 @@ class _FakeWebAdapter implements VehicleBleWebAdapter {
       _hasSelectedDevice ? 'EV-Simulator-01' : null;
 
   @override
+  Future<String> getAvailabilityStatus() async => availabilityStatus;
+
+  @override
   Future<VehicleBleWebConnection> connect({
     required bool requestDevice,
     void Function()? onConnecting,
+    void Function(String stage)? onStage,
   }) async {
     requestDeviceArguments.add(requestDevice);
-    if (requestDevice) _hasSelectedDevice = true;
+    if (requestDevice) {
+      _hasSelectedDevice = true;
+      onStage?.call('DEVICE_SELECTED');
+    }
     onConnecting?.call();
     final error = connectError;
     if (error != null) throw error;
     final connection = _FakeWebConnection();
+    connection._vehicleId = simulatorVehicleId;
+    connection.initialTelemetryDelay = initialTelemetryDelay;
     connections.add(connection);
     return connection;
   }
@@ -196,6 +417,8 @@ class _FakeWebConnection implements VehicleBleWebConnection {
       StreamController<void>.broadcast();
   final List<List<int>> writes = [];
   int _messageId = 0;
+  bool closed = false;
+  Duration initialTelemetryDelay = Duration.zero;
 
   @override
   Stream<List<int>> get stateNotifications => _notifications.stream;
@@ -205,13 +428,33 @@ class _FakeWebConnection implements VehicleBleWebConnection {
 
   @override
   Future<void> startStateNotifications() async {
-    emitSnapshot(_snapshot(vehicleId: 'vehicle-1', sequence: 0, battery: 75));
+    if (initialTelemetryDelay > Duration.zero) {
+      Timer(
+        initialTelemetryDelay,
+        () => emitSnapshot(
+          _snapshot(vehicleId: _vehicleId, sequence: 0, battery: 75),
+        ),
+      );
+      return;
+    }
+    emitSnapshot(_snapshot(vehicleId: _vehicleId, sequence: 0, battery: 75));
   }
+
+  String _vehicleId = 'vehicle-1';
 
   void emitSnapshot(VehicleStateSnapshot snapshot) {
     final bytes = utf8.encode(snapshot.encode());
     for (final frame in BleFrameCodec.fragment(
       bytes,
+      messageId: _messageId++,
+    )) {
+      _notifications.add(frame);
+    }
+  }
+
+  void emitRawMessage(String message) {
+    for (final frame in BleFrameCodec.fragment(
+      utf8.encode(message),
       messageId: _messageId++,
     )) {
       _notifications.add(frame);
@@ -225,6 +468,7 @@ class _FakeWebConnection implements VehicleBleWebConnection {
 
   @override
   Future<void> close() async {
+    closed = true;
     await _notifications.close();
     await _disconnects.close();
   }

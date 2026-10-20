@@ -9,12 +9,12 @@ import 'package:image_picker/image_picker.dart';
 import '../app_theme.dart';
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
-import '../models/vehicle_telemetry.dart';
 import '../services/auth_service.dart';
 import '../services/distance_unit_service.dart';
 import '../services/firestore_service.dart';
+import '../widgets/vehicle_ble_state_view.dart';
+import 'auth_gate.dart';
 import 'edit_profile_page.dart';
-import 'login_page.dart';
 import 'vehicle_details_page.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -82,7 +82,7 @@ class _ProfilePageState extends State<ProfilePage> {
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const LoginPage()),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
         (route) => false,
       );
     } catch (error) {
@@ -112,7 +112,7 @@ class _ProfilePageState extends State<ProfilePage> {
           ? _SignedOutView(
               onSignIn: () => Navigator.pushAndRemoveUntil(
                 context,
-                MaterialPageRoute(builder: (_) => const LoginPage()),
+                MaterialPageRoute(builder: (_) => const AuthGate()),
                 (route) => false,
               ),
             )
@@ -1144,7 +1144,6 @@ class _VehicleSummaryCard extends StatefulWidget {
 
 class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
   late Stream<Vehicle?> _vehicleStream;
-  late Stream<VehicleData?> _telemetryStream;
 
   @override
   void initState() {
@@ -1162,7 +1161,6 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
 
   void _subscribe() {
     _vehicleStream = widget.firestore.watchVehicleById(widget.vehicleId);
-    _telemetryStream = widget.firestore.watchVehicleTelemetry(widget.vehicleId);
   }
 
   @override
@@ -1194,16 +1192,21 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
         );
       }
 
-      return StreamBuilder<VehicleData?>(
-        stream: _telemetryStream,
-        builder: (context, telemetrySnapshot) {
-          final telemetry = telemetrySnapshot.data;
-          final chargeLabel = telemetry != null && telemetry.isCharging
+      return VehicleBleStateView(
+        builder: (context, client, snapshot) {
+          final state = snapshot?.vehicleId == vehicle.id
+              ? snapshot?.state
+              : null;
+          final connected =
+              client.isConnected && client.vehicleId == vehicle.id;
+          final chargeLabel = state == null
+              ? 'Unavailable'
+              : state.chargingConnected
               ? 'Charging'
               : 'Standby';
-          final connectionLabel = vehicle.bluetoothDeviceId.isNotEmpty
-              ? 'Bluetooth registered'
-              : 'Not connected';
+          final connectionLabel = connected
+              ? 'Simulator connected'
+              : 'Simulator not connected';
 
           return Container(
             padding: const EdgeInsets.all(20),
@@ -1287,9 +1290,9 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                       child: _TelemetryTile(
                         icon: Icons.battery_charging_full_rounded,
                         label: 'Battery',
-                        value: telemetry == null
+                        value: state == null
                             ? '—'
-                            : '${telemetry.battery.round()}%',
+                            : '${state.batteryPercent.round()}%',
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -1297,10 +1300,10 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                       child: _TelemetryTile(
                         icon: Icons.route_rounded,
                         label: 'Range',
-                        value: telemetry == null
+                        value: state == null
                             ? '—'
                             : DistanceUnitService.format(
-                                telemetry.range,
+                                state.rangeKm,
                                 widget.distanceUnit,
                                 decimals: 0,
                               ),
@@ -1311,9 +1314,7 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                       child: _TelemetryTile(
                         icon: Icons.health_and_safety_outlined,
                         label: 'Health',
-                        value: telemetry == null
-                            ? '—'
-                            : '${telemetry.batteryHealth.round()}%',
+                        value: 'N/A',
                       ),
                     ),
                   ],
@@ -1325,11 +1326,13 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                   children: [
                     Expanded(
                       child: _InlineStatus(
-                        icon: telemetry != null && telemetry.isCharging
+                        icon: state != null && state.chargingConnected
                             ? Icons.ev_station_rounded
+                            : state == null
+                            ? Icons.help_outline
                             : Icons.power_outlined,
                         label: chargeLabel,
-                        color: telemetry != null && telemetry.isCharging
+                        color: state != null && state.chargingConnected
                             ? const Color(0xFF16875A)
                             : AppTheme.mutedBlue,
                       ),
@@ -1337,9 +1340,13 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _InlineStatus(
-                        icon: Icons.bluetooth_disabled_rounded,
-                        label: 'Not connected',
-                        color: AppTheme.mutedBlue,
+                        icon: connected
+                            ? Icons.bluetooth_connected_rounded
+                            : Icons.bluetooth_disabled_rounded,
+                        label: connectionLabel,
+                        color: connected
+                            ? const Color(0xFF16875A)
+                            : AppTheme.mutedBlue,
                       ),
                     ),
                   ],

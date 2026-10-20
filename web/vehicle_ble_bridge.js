@@ -4,13 +4,57 @@
 
   globalThis.VehicleBleBridge = {
     isSupported() {
-      return Boolean(navigator.bluetooth);
+      return Boolean(
+        navigator.bluetooth &&
+          typeof navigator.bluetooth.requestDevice === "function",
+      );
+    },
+
+    isSecureContext() {
+      return globalThis.isSecureContext === true;
+    },
+
+    bluetoothPolicyStatus() {
+      const policy =
+        document.permissionsPolicy || document.featurePolicy || null;
+      if (!policy || typeof policy.allowsFeature !== "function") {
+        return "unknown";
+      }
+      return policy.allowsFeature("bluetooth") ? "allowed" : "blocked";
+    },
+
+    getAvailabilityStatus() {
+      if (
+        !navigator.bluetooth ||
+        typeof navigator.bluetooth.getAvailability !== "function"
+      ) {
+        return Promise.resolve("unknown");
+      }
+      return navigator.bluetooth
+        .getAvailability()
+        .then((available) => (available ? "available" : "unavailable"));
     },
 
     requestDevice(serviceUuid) {
-      return navigator.bluetooth.requestDevice({
-        filters: [{ services: [serviceUuid] }],
-      });
+      try {
+        return navigator.bluetooth
+          .requestDevice({
+            filters: [{ services: [serviceUuid] }],
+          })
+          .catch((error) => {
+            throw new Error(
+              `DEVICE_REQUEST: ${error?.name || "Error"}: ${
+                error?.message || String(error)
+              }`,
+            );
+          });
+      } catch (error) {
+        throw new Error(
+          `DEVICE_REQUEST: ${error?.name || "Error"}: ${
+            error?.message || String(error)
+          }`,
+        );
+      }
     },
 
     getDeviceName(device) {
@@ -18,17 +62,45 @@
     },
 
     connect(device) {
-      return device.gatt.connect();
+      return device.gatt.connect().catch((error) => {
+        throw new Error(
+          `GATT_CONNECT: ${error?.name || "Error"}: ${
+            error?.message || String(error)
+          }`,
+        );
+      });
     },
 
-    getCharacteristic(server, serviceUuid, characteristicUuid) {
+    getService(server, serviceUuid) {
       return server
         .getPrimaryService(serviceUuid)
-        .then((service) => service.getCharacteristic(characteristicUuid));
+        .catch((error) => {
+          throw new Error(
+            `GATT_SERVICE_DISCOVERY: ${error?.name || "Error"}: ${
+              error?.message || String(error)
+            }`,
+          );
+        });
+    },
+
+    getCharacteristic(service, characteristicUuid) {
+      return service.getCharacteristic(characteristicUuid).catch((error) => {
+        throw new Error(
+          `GATT_CHARACTERISTIC_DISCOVERY: ${error?.name || "Error"}: ${
+            error?.message || String(error)
+          }`,
+        );
+      });
     },
 
     startNotifications(characteristic) {
-      return characteristic.startNotifications();
+      return characteristic.startNotifications().catch((error) => {
+        throw new Error(
+          `NOTIFICATION_SUBSCRIPTION: ${error?.name || "Error"}: ${
+            error?.message || String(error)
+          }`,
+        );
+      });
     },
 
     addNotificationListener(characteristic, listenerId, callback) {
@@ -69,7 +141,15 @@
     },
 
     write(characteristic, bytes) {
-      return characteristic.writeValueWithResponse(new Uint8Array(bytes));
+      return characteristic
+        .writeValueWithResponse(new Uint8Array(bytes))
+        .catch((error) => {
+          throw new Error(
+            `GATT_WRITE: ${error?.name || "Error"}: ${
+              error?.message || String(error)
+            }`,
+          );
+        });
     },
 
     disconnect(device) {

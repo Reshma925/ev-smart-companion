@@ -4,9 +4,24 @@ const { join } = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
 
-async function loadBridge(bluetooth) {
+async function loadBridge(bluetooth, { secure = true, policy = "allowed" } = {}) {
   const script = await readFile(join(__dirname, "vehicle_ble_bridge.js"), "utf8");
-  const context = { navigator: { bluetooth }, Uint8Array, Promise, Map, Array };
+  const context = {
+    navigator: { bluetooth },
+    document: {
+      permissionsPolicy: {
+        allowsFeature(name) {
+          assert.equal(name, "bluetooth");
+          return policy === "allowed";
+        },
+      },
+    },
+    isSecureContext: secure,
+    Uint8Array,
+    Promise,
+    Map,
+    Array,
+  };
   context.globalThis = context;
   vm.runInNewContext(script, context);
   return context.VehicleBleBridge;
@@ -114,8 +129,9 @@ test("uses the shared protocol service filter and bridges GATT state and command
   assert.equal(requestOptions.filters.length, 1);
   assert.equal(requestOptions.filters[0].services[0], serviceUuid);
   const server = await bridge.connect(selected);
-  const state = await bridge.getCharacteristic(server, serviceUuid, stateUuid);
-  const command = await bridge.getCharacteristic(server, serviceUuid, commandUuid);
+  const discoveredService = await bridge.getService(server, serviceUuid);
+  const state = await bridge.getCharacteristic(discoveredService, stateUuid);
+  const command = await bridge.getCharacteristic(discoveredService, commandUuid);
 
   bridge.addNotificationListener(state, 1, (bytes) => {
     assert.deepEqual(bytes, [0xe7, 4, 1, 0, 65]);
@@ -142,4 +158,98 @@ test("uses the shared protocol service filter and bridges GATT state and command
 test("reports Web Bluetooth unavailable when the browser lacks the API", async () => {
   const bridge = await loadBridge(undefined);
   assert.equal(bridge.isSupported(), false);
+  assert.equal(bridge.isSecureContext(), true);
+  assert.equal(bridge.bluetoothPolicyStatus(), "allowed");
+  assert.equal(await bridge.getAvailabilityStatus(), "unknown");
+});
+
+test("reports secure-context, permissions-policy, and adapter availability", async () => {
+  const supportedBridge = await loadBridge(
+    {
+      requestDevice() {},
+      getAvailability() {
+        return Promise.resolve(true);
+      },
+    },
+    { secure: false, policy: "blocked" },
+  );
+  assert.equal(supportedBridge.isSupported(), true);
+  assert.equal(supportedBridge.isSecureContext(), false);
+  assert.equal(supportedBridge.bluetoothPolicyStatus(), "blocked");
+  assert.equal(await supportedBridge.getAvailabilityStatus(), "available");
+
+  const unavailableBridge = await loadBridge({
+    requestDevice() {},
+    getAvailability() {
+      return Promise.resolve(false);
+    },
+  });
+  assert.equal(await unavailableBridge.getAvailabilityStatus(), "unavailable");
+});
+
+test("preserves chooser error names and the failing operation stage", async () => {
+  const bridge = await loadBridge({
+    requestDevice() {
+      return Promise.reject(
+        Object.assign(new Error("User cancelled"), { name: "NotFoundError" }),
+      );
+    },
+  });
+  await assert.rejects(bridge.requestDevice("service-uuid"), {
+    message: /DEVICE_REQUEST: NotFoundError: User cancelled/,
+  });
+});
+
+test("reports GATT service, characteristic, and notification failures by stage", async () => {
+  const bridge = await loadBridge({
+    requestDevice() {},
+    getAvailability() {
+      return Promise.reject(new Error("Adapter unavailable"));
+    },
+  });
+  await assert.rejects(bridge.getAvailabilityStatus(), /Adapter unavailable/);
+  await assert.rejects(
+    bridge.getService(
+      {
+        getPrimaryService() {
+          return Promise.reject(
+            Object.assign(new Error("Service missing"), { name: "NotFoundError" }),
+          );
+        },
+      },
+      "service-uuid",
+    ),
+    { message: /GATT_SERVICE_DISCOVERY: NotFoundError: Service missing/ },
+  );
+  await assert.rejects(
+    bridge.getCharacteristic(
+      {
+        getCharacteristic() {
+          return Promise.reject(
+            Object.assign(new Error("Characteristic missing"), {
+              name: "NotFoundError",
+            }),
+          );
+        },
+      },
+      "characteristic-uuid",
+    ),
+    {
+      message: /GATT_CHARACTERISTIC_DISCOVERY: NotFoundError: Characteristic missing/,
+    },
+  );
+  await assert.rejects(
+    bridge.startNotifications({
+      startNotifications() {
+        return Promise.reject(
+          Object.assign(new Error("Subscription failed"), {
+            name: "NetworkError",
+          }),
+        );
+      },
+    }),
+    {
+      message: /NOTIFICATION_SUBSCRIPTION: NetworkError: Subscription failed/,
+    },
+  );
 });

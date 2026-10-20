@@ -3,9 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
-import 'package:flutter_application_2/models/vehicle_telemetry.dart';
 import 'package:flutter_application_2/screens/learn_screen.dart';
 import 'package:flutter_application_2/services/learning_assistant_service.dart';
+import 'package:flutter_application_2/services/vehicle_ble_client.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 class _FakeAssistant implements EvLearningAssistant {
   _FakeAssistant({this.answer = 'EVs use electric motors.', this.failure});
@@ -48,23 +49,19 @@ const _vehicle = Vehicle(
   maximumRangeKm: 300,
 );
 
-const _telemetry = VehicleData(
-  battery: 54,
-  range: 153,
-  batteryHealth: 96,
-  healthScore: 90,
-  isCharging: false,
-);
-
 Widget _learnApp({
   required EvLearningAssistant assistant,
   Vehicle? vehicle = _vehicle,
-  VehicleData? telemetry = _telemetry,
 }) {
+  VehicleBleClient.shared.snapshot.value = const VehicleStateSnapshot(
+    vehicleId: 'EV001',
+    sequence: 1,
+    timestampMillis: 1,
+    state: VehicleControlState(batteryPercent: 54, rangeKm: 153),
+  );
   return MaterialApp(
     home: LearnScreen(
       vehicleStream: Stream.value(vehicle),
-      telemetryStreamFor: (_) => Stream.value(telemetry),
       assistant: assistant,
     ),
   );
@@ -171,7 +168,7 @@ void main() {
       find.text('Regeneration recovers some motion energy.'),
       findsOneWidget,
     );
-    expect(assistant.contexts.single.telemetry?.battery, 54);
+    expect(assistant.contexts.single.telemetry?.batteryPercent, 54);
   });
 
   testWidgets('assistant shows Thinking while the callable is pending', (
@@ -191,10 +188,7 @@ void main() {
     assistant.response.complete('It recovers some energy while slowing.');
     await tester.pumpAndSettle();
     expect(find.text('Thinking...'), findsNothing);
-    expect(
-      find.text('It recovers some energy while slowing.'),
-      findsOneWidget,
-    );
+    expect(find.text('It recovers some energy while slowing.'), findsOneWidget);
   });
 
   testWidgets('handles assistant failure without exposing internals', (
@@ -222,9 +216,7 @@ void main() {
     final assistant = _FakeAssistant(
       answer: 'AC is converted by the onboard charger.',
     );
-    await tester.pumpWidget(
-      _learnApp(assistant: assistant, vehicle: null, telemetry: null),
-    );
+    await tester.pumpWidget(_learnApp(assistant: assistant, vehicle: null));
     await tester.pumpAndSettle();
 
     await _scrollToText(

@@ -16,12 +16,11 @@ import '../models/user_model.dart';
 import '../models/vehicle.dart';
 import '../services/charging_station_service.dart';
 import '../services/distance_unit_service.dart';
-import '../services/ev_range_service.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';
 import '../services/road_directions_service.dart';
+import '../services/vehicle_ble_client.dart';
 import '../widgets/charging_card_section.dart';
-import 'vehicle_details_page.dart';
 
 class ChargingStationPage extends StatefulWidget {
   const ChargingStationPage({super.key});
@@ -40,7 +39,6 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
 
-  StreamSubscription<double?>? _telemetrySubscription;
   StreamSubscription<Vehicle?>? _vehicleSubscription;
   StreamSubscription<UserModel?>? _profileSubscription;
   Vehicle? _vehicle;
@@ -50,43 +48,24 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   String _distanceUnit = DistanceUnitService.km;
   String? _locationMessage;
   String? _vehicleMessage;
-  String? _batterySourceNotice;
   String? _stationMessage;
   String? _destinationMessage;
   String? _selectedStationId;
   double? _batteryPercentage;
-  double? _maximumRangeKm;
+  double? _rangeKm;
   double _zoom = 14;
   bool _loadingLocation = true;
   bool _loadingVehicle = true;
-  bool _loadingTelemetry = true;
   bool _loadingStations = false;
   bool _permanentlyDenied = false;
   bool _hasSearched = false;
   bool _mapReady = false;
   bool _fastChargingOnly = false;
   bool _loadingRoute = false;
-  bool _hasLiveBatteryTelemetry = false;
   bool _routeSearchMode = false;
   int _searchGeneration = 0;
 
-  double? get _estimatedRangeKm {
-    final maximumRange = _maximumRangeKm;
-    final battery = _batteryPercentage;
-    if (maximumRange == null ||
-        battery == null ||
-        maximumRange <= 0 ||
-        !maximumRange.isFinite ||
-        !battery.isFinite ||
-        battery < 0 ||
-        battery > 100) {
-      return null;
-    }
-    return EvRangeService.calculateCurrentRangeKm(
-      maximumRangeKm: maximumRange,
-      batteryPercentage: battery,
-    );
-  }
+  double? get _estimatedRangeKm => _rangeKm;
 
   double? get _searchRadiusKm => _estimatedRangeKm;
 
@@ -120,13 +99,15 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   @override
   void initState() {
     super.initState();
+    VehicleBleClient.shared.snapshot.addListener(_onBleSnapshotChanged);
+    _onBleSnapshotChanged();
     _locateUser();
     _loadVehicle();
   }
 
   @override
   void dispose() {
-    _telemetrySubscription?.cancel();
+    VehicleBleClient.shared.snapshot.removeListener(_onBleSnapshotChanged);
     _vehicleSubscription?.cancel();
     _profileSubscription?.cancel();
     _chargingService.close();
@@ -139,25 +120,19 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
 
   Future<void> _loadVehicle() async {
     if (!mounted) return;
-    final subscription = _telemetrySubscription;
     final vehicleSubscription = _vehicleSubscription;
     final profileSubscription = _profileSubscription;
-    _telemetrySubscription = null;
     _vehicleSubscription = null;
     _profileSubscription = null;
-    await subscription?.cancel();
     await vehicleSubscription?.cancel();
     await profileSubscription?.cancel();
     if (!mounted) return;
     setState(() {
       _loadingVehicle = true;
-      _maximumRangeKm = null;
+      _rangeKm = null;
       _batteryPercentage = null;
-      _hasLiveBatteryTelemetry = false;
-      _batterySourceNotice = null;
       _vehicle = null;
       _vehicleMessage = null;
-      _loadingTelemetry = true;
       _stations = const [];
       _selectedStationId = null;
       _hasSearched = false;
@@ -166,7 +141,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     try {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) {
-        throw StateError('Sign in to load your registered vehicle telemetry.');
+        throw StateError('Sign in to load your registered vehicle.');
       }
 
       final profile = await _firestoreService.getUserProfile(uid);
@@ -180,40 +155,19 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         throw StateError('Your registered vehicle could not be loaded.');
       }
       if (!mounted) return;
+      final liveSnapshot = VehicleBleClient.shared.snapshot.value;
+      final liveState = liveSnapshot?.vehicleId == vehicle.id
+          ? liveSnapshot?.state
+          : null;
       setState(() {
         _vehicle = vehicle;
-        _maximumRangeKm = _validMaximumRange(vehicle.maximumRangeKm);
-        _batteryPercentage = _validBattery(vehicle.batteryPercentage);
-        _batterySourceNotice = _batteryPercentage == null
-            ? null
-            : 'Using batteryPercentage from vehicles/${vehicle.id}; live telemetry has not arrived yet.';
-        _loadingTelemetry = _batteryPercentage == null;
+        _batteryPercentage = liveState?.batteryPercent;
+        _rangeKm = liveState?.rangeKm;
         _distanceUnit = DistanceUnitService.normalize(profile.distanceUnit);
         _loadingVehicle = false;
         _updateRangeMessages();
       });
 
-      _telemetrySubscription = _firestoreService
-          .watchVehicleBatteryPercentage(vehicle.id)
-          .listen(
-            _onBatteryPercentage,
-            onError: (Object error) {
-              debugPrint('Vehicle telemetry stream failed: $error');
-              if (!mounted) return;
-              final previousRange = _searchRadiusKm;
-              final fallback = _validBattery(_vehicle?.batteryPercentage);
-              setState(() {
-                _loadingTelemetry = false;
-                _hasLiveBatteryTelemetry = false;
-                _batteryPercentage = fallback;
-                _batterySourceNotice = fallback == null
-                    ? null
-                    : 'Live battery telemetry could not be read; using the stored batteryPercentage in vehicles/${_vehicle!.id}.';
-                _updateRangeMessages();
-              });
-              _invalidateSearchResultsIfRangeChanged(previousRange);
-            },
-          );
       _vehicleSubscription = _firestoreService
           .watchVehicleById(vehicle.id)
           .listen(
@@ -254,7 +208,6 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       if (!mounted) return;
       setState(() {
         _loadingVehicle = false;
-        _loadingTelemetry = false;
         _vehicleMessage = error is StateError
             ? error.message.toString()
             : 'Could not load vehicle data from Firebase. Check your connection and retry.';
@@ -268,7 +221,8 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       _searchGeneration++;
       setState(() {
         _vehicle = null;
-        _maximumRangeKm = null;
+        _rangeKm = null;
+        _batteryPercentage = null;
         _stations = const [];
         _selectedStationId = null;
         _hasSearched = false;
@@ -277,63 +231,22 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       return;
     }
 
-    final oldRange = _searchRadiusKm;
     setState(() {
       _vehicle = vehicle;
-      _maximumRangeKm = _validMaximumRange(vehicle.maximumRangeKm);
-      if (!_hasLiveBatteryTelemetry) {
-        _batteryPercentage = _validBattery(vehicle.batteryPercentage);
-        _batterySourceNotice = _batteryPercentage == null
-            ? null
-            : 'Using batteryPercentage from vehicles/${vehicle.id}; live telemetry is unavailable.';
-      }
       _updateRangeMessages();
     });
-    final updatedRange = _searchRadiusKm;
-    if (updatedRange != null && updatedRange != oldRange && _mapReady) {
-      _fitRange(updatedRange);
-    }
-    _invalidateSearchResultsIfRangeChanged(oldRange);
   }
 
-  void _onBatteryPercentage(double? batteryPercentage) {
+  void _onBleSnapshotChanged() {
     if (!mounted) return;
     final oldRange = _searchRadiusKm;
-    if (batteryPercentage == null) {
-      final fallback = _validBattery(_vehicle?.batteryPercentage);
-      setState(() {
-        _loadingTelemetry = false;
-        _hasLiveBatteryTelemetry = false;
-        _batteryPercentage = fallback;
-        _batterySourceNotice = fallback == null
-            ? null
-            : 'Live battery telemetry is missing; using the stored batteryPercentage in vehicles/${_vehicle!.id}.';
-        _updateRangeMessages();
-      });
-      _invalidateSearchResultsIfRangeChanged(oldRange);
-      return;
-    }
-
-    if (!batteryPercentage.isFinite ||
-        batteryPercentage < 0 ||
-        batteryPercentage > 100) {
-      setState(() {
-        _loadingTelemetry = false;
-        _hasLiveBatteryTelemetry = false;
-        _batteryPercentage = null;
-        _batterySourceNotice = null;
-        _vehicleMessage =
-            'Invalid battery percentage in vehicles/${_vehicle?.id ?? 'unknown vehicle'}/telemetry/live.battery or batteryPercentage. Expected a number from 0 to 100.';
-      });
-      _invalidateSearchResultsIfRangeChanged(oldRange);
-      return;
-    }
-
+    final liveSnapshot = VehicleBleClient.shared.snapshot.value;
+    final state = liveSnapshot?.vehicleId == _vehicle?.id
+        ? liveSnapshot?.state
+        : null;
     setState(() {
-      _batteryPercentage = batteryPercentage;
-      _loadingTelemetry = false;
-      _hasLiveBatteryTelemetry = true;
-      _batterySourceNotice = null;
+      _batteryPercentage = state?.batteryPercent;
+      _rangeKm = state?.rangeKm;
       _updateRangeMessages();
     });
     final range = _searchRadiusKm;
@@ -343,14 +256,6 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     _invalidateSearchResultsIfRangeChanged(oldRange);
   }
 
-  static double? _validMaximumRange(double? rangeKm) =>
-      rangeKm != null && rangeKm.isFinite && rangeKm > 0 ? rangeKm : null;
-
-  static double? _validBattery(double? battery) =>
-      battery != null && battery.isFinite && battery >= 0 && battery <= 100
-      ? battery
-      : null;
-
   void _updateRangeMessages() {
     final vehicleId = _vehicle?.id;
     if (vehicleId == null) {
@@ -358,18 +263,9 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       return;
     }
 
-    final missing = <String>[];
-    if (_maximumRangeKm == null) {
-      missing.add(
-        'Maximum range is missing at vehicles/$vehicleId.maximumRangeKm (also checked maxRangeKm, estimatedRangeKm, estimatedRange and range). Open Vehicle Details to configure a known rated range.',
-      );
-    }
-    if (_batteryPercentage == null) {
-      missing.add(
-        'Battery is missing at vehicles/$vehicleId/telemetry/live.battery or batteryPercentage, and vehicles/$vehicleId.batteryPercentage or battery.',
-      );
-    }
-    _vehicleMessage = missing.isEmpty ? null : missing.join(' ');
+    _vehicleMessage = _batteryPercentage == null || _rangeKm == null
+        ? 'Connect to the simulator in Vehicle Controls to see live battery and range.'
+        : null;
   }
 
   void _invalidateSearchResultsIfRangeChanged(double? previousRangeKm) {
@@ -510,32 +406,13 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     if (vehicle == null) {
       throw StateError('The linked vehicle document is missing or inactive.');
     }
-    final liveBattery = await _firestoreService.getVehicleBatteryPercentage(
-      vehicle.id,
-    );
-    final validLiveBattery = _validBattery(liveBattery);
-    final storedBattery = _validBattery(vehicle.batteryPercentage);
-    final resolvedBattery = liveBattery == null
-        ? storedBattery
-        : validLiveBattery;
     if (!mounted) return;
     final previousRange = _searchRadiusKm;
     setState(() {
       _vehicle = vehicle;
-      _maximumRangeKm = _validMaximumRange(vehicle.maximumRangeKm);
-      _batteryPercentage = resolvedBattery;
-      _hasLiveBatteryTelemetry = liveBattery != null;
-      _batterySourceNotice = liveBattery == null && storedBattery != null
-          ? 'Live telemetry is absent; using the saved battery value from vehicles/${vehicle.id}.batteryPercentage.'
-          : null;
       _distanceUnit = DistanceUnitService.normalize(profile.distanceUnit);
       _loadingVehicle = false;
-      _loadingTelemetry = false;
       _updateRangeMessages();
-      if (liveBattery != null && validLiveBattery == null) {
-        _vehicleMessage =
-            'Invalid battery percentage in vehicles/${vehicle.id}/telemetry/live.battery or batteryPercentage. Expected a number from 0 to 100.';
-      }
     });
     _invalidateSearchResultsIfRangeChanged(previousRange);
   }
@@ -893,18 +770,12 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
             rangeKm: rangeKm,
             searchRadiusKm: searchRadiusKm,
             unit: _distanceUnit,
-            loading: _loadingVehicle || _loadingTelemetry,
-            message: _vehicleMessage ?? _batterySourceNotice,
+            loading: _loadingVehicle,
+            message: _vehicleMessage,
             messageIsNotice:
-                _vehicleMessage == null && _batterySourceNotice != null,
-            onConfigure: _vehicle == null || _maximumRangeKm != null
-                ? null
-                : () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => VehicleDetailsPage(vehicle: _vehicle),
-                    ),
-                  ),
+                _vehicleMessage?.startsWith('Connect to the simulator') ??
+                false,
+            onConfigure: null,
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),

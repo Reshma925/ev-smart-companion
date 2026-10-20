@@ -2,13 +2,14 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../app_theme.dart';
 import '../models/vehicle.dart';
-import '../models/vehicle_telemetry.dart';
 import '../services/distance_unit_service.dart';
 import '../services/firestore_service.dart';
 import '../services/weather_service.dart';
+import '../widgets/vehicle_ble_state_view.dart';
 import '../widgets/weather_card.dart';
 import 'charging_station_page.dart';
 import 'maintenance.dart';
@@ -30,15 +31,10 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _DashboardIdentity {
-  const _DashboardIdentity({
-    required this.name,
-    required this.vehicle,
-    required this.telemetry,
-  });
+  const _DashboardIdentity({required this.name, required this.vehicle});
 
   final String name;
   final Vehicle vehicle;
-  final Stream<VehicleData?> telemetry;
 }
 
 class _HomeScreenState extends State<HomeScreen> {
@@ -132,11 +128,7 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         );
 
-    return _DashboardIdentity(
-      name: profile.name,
-      vehicle: vehicle,
-      telemetry: firestoreService.watchVehicleTelemetry(vehicle.id),
-    );
+    return _DashboardIdentity(name: profile.name, vehicle: vehicle);
   }
 
   void retryLoadingIdentity() {
@@ -178,7 +170,6 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(
         builder: (_) => LearnScreen(
           vehicleStream: firestoreService.watchConnectedVehicle(uid),
-          telemetryStreamFor: firestoreService.watchVehicleTelemetry,
           assistant: FirebaseLearningAssistantService(),
           distanceUnit: _distanceUnit,
         ),
@@ -215,136 +206,122 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             }
             final vehicle = _latestVehicle ?? identity.vehicle;
-            return StreamBuilder<VehicleData?>(
-              stream: identity.telemetry,
-              builder: (context, telemetrySnapshot) {
-                if (telemetrySnapshot.hasError) {
-                  return _LoadError(
-                    message:
-                        'Could not load vehicle telemetry: ${telemetrySnapshot.error}',
-                    onRetry: retryLoadingIdentity,
+            return VehicleBleStateView(
+              builder: (context, ble, snapshot) => LayoutBuilder(
+                builder: (context, constraints) {
+                  final wide = constraints.maxWidth >= 900;
+                  final matchingSnapshot = snapshot?.vehicleId == vehicle.id
+                      ? snapshot
+                      : null;
+                  final data = matchingSnapshot?.state;
+                  final contentWidth = wide ? 1160.0 : 760.0;
+                  final batterySection = _BatteryPanel(
+                    data: data,
+                    distanceUnit: _distanceUnit,
                   );
-                }
-                if (!telemetrySnapshot.hasData) {
-                  if (telemetrySnapshot.connectionState ==
-                      ConnectionState.active) {
-                    return _LoadError(
-                      message:
-                          'No live vehicle telemetry is currently available in Firestore.',
-                      onRetry: retryLoadingIdentity,
-                    );
-                  }
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                return LayoutBuilder(
-                  builder: (context, constraints) {
-                    final wide = constraints.maxWidth >= 900;
-                    final data = telemetrySnapshot.data!;
-                    final contentWidth = wide ? 1160.0 : 760.0;
-                    final batterySection = _BatteryPanel(
-                      data: data,
-                      distanceUnit: _distanceUnit,
-                    );
-                    final weatherSection = WeatherCard(
-                      service: weatherService,
-                      distanceUnit: _distanceUnit,
-                    );
-                    final summary = _VehicleHealthSummary(data: data);
-                    final actions = _QuickActions(
-                      onControls: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              VehicleControlsPage(vehicle: vehicle),
-                        ),
+                  final weatherSection = WeatherCard(
+                    service: weatherService,
+                    distanceUnit: _distanceUnit,
+                  );
+                  final summary = const _VehicleHealthSummary();
+                  final actions = _QuickActions(
+                    onControls: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => VehicleControlsPage(vehicle: vehicle),
                       ),
-                      onTripPlanner: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => TripPlannerPage(
-                            vehicleId: vehicle.id,
-                            onConfigureVehicle: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    VehicleDetailsPage(vehicle: vehicle),
-                              ),
+                    ),
+                    onTripPlanner: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => TripPlannerPage(
+                          vehicleId: vehicle.id,
+                          onConfigureVehicle: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  VehicleDetailsPage(vehicle: vehicle),
                             ),
-                            distanceUnit: _distanceUnit,
                           ),
+                          distanceUnit: _distanceUnit,
                         ),
                       ),
-                      onHealth: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => VehicleHealthPage(vehicle: vehicle),
-                        ),
+                    ),
+                    onHealth: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => VehicleHealthPage(vehicle: vehicle),
                       ),
-                      onMaintenance: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => MaintenancePage(vehicle: vehicle),
-                        ),
+                    ),
+                    onMaintenance: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => MaintenancePage(vehicle: vehicle),
                       ),
-                    );
+                    ),
+                  );
 
-                    return Center(
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: contentWidth),
-                        child: CustomScrollView(
-                          slivers: [
-                            SliverPadding(
-                              padding: EdgeInsets.fromLTRB(
-                                wide ? 32 : 20,
-                                16,
-                                wide ? 32 : 20,
-                                28,
-                              ),
-                              sliver: SliverList(
-                                delegate: SliverChildListDelegate([
-                                  _DashboardHeader(
-                                    greeting: greeting(),
-                                    name: identity.name,
-                                    onProfile: openProfile,
-                                  ),
-                                  const SizedBox(height: 22),
-                                  _VehicleHero(vehicle: vehicle, data: data),
-                                  const SizedBox(height: 18),
-                                  if (wide)
-                                    Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Expanded(child: batterySection),
-                                        const SizedBox(width: 16),
-                                        Expanded(child: weatherSection),
-                                      ],
-                                    )
-                                  else ...[
-                                    batterySection,
-                                    const SizedBox(height: 14),
-                                    weatherSection,
-                                  ],
-                                  const SizedBox(height: 16),
-                                  summary,
-                                  const SizedBox(height: 24),
-                                  _SectionHeading(
-                                    eyebrow: 'AT A GLANCE',
-                                    title: 'Your next move',
-                                  ),
-                                  const SizedBox(height: 12),
-                                  actions,
-                                ]),
-                              ),
+                  return Center(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: contentWidth),
+                      child: CustomScrollView(
+                        slivers: [
+                          SliverPadding(
+                            padding: EdgeInsets.fromLTRB(
+                              wide ? 32 : 20,
+                              16,
+                              wide ? 32 : 20,
+                              28,
                             ),
-                          ],
-                        ),
+                            sliver: SliverList(
+                              delegate: SliverChildListDelegate([
+                                _DashboardHeader(
+                                  greeting: greeting(),
+                                  name: identity.name,
+                                  onProfile: openProfile,
+                                ),
+                                const SizedBox(height: 22),
+                                _VehicleHero(
+                                  vehicle: vehicle,
+                                  data: data,
+                                  connected:
+                                      ble.isConnected &&
+                                      ble.vehicleId == vehicle.id,
+                                ),
+                                const SizedBox(height: 18),
+                                if (wide)
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(child: batterySection),
+                                      const SizedBox(width: 16),
+                                      Expanded(child: weatherSection),
+                                    ],
+                                  )
+                                else ...[
+                                  batterySection,
+                                  const SizedBox(height: 14),
+                                  weatherSection,
+                                ],
+                                const SizedBox(height: 16),
+                                summary,
+                                const SizedBox(height: 24),
+                                _SectionHeading(
+                                  eyebrow: 'AT A GLANCE',
+                                  title: 'Your next move',
+                                ),
+                                const SizedBox(height: 12),
+                                actions,
+                              ]),
+                            ),
+                          ),
+                        ],
                       ),
-                    );
-                  },
-                );
-              },
+                    ),
+                  );
+                },
+              ),
             );
           },
         ),
@@ -452,10 +429,15 @@ class _DashboardHeader extends StatelessWidget {
 }
 
 class _VehicleHero extends StatelessWidget {
-  const _VehicleHero({required this.vehicle, required this.data});
+  const _VehicleHero({
+    required this.vehicle,
+    required this.data,
+    required this.connected,
+  });
 
   final Vehicle vehicle;
-  final VehicleData data;
+  final VehicleControlState? data;
+  final bool connected;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -518,9 +500,14 @@ class _VehicleHero extends StatelessWidget {
                         ),
                         const SizedBox(width: 7),
                         Text(
-                          data.battery <= 20
+                          data == null
+                              ? (connected
+                                    ? 'WAITING FOR TELEMETRY'
+                                    : 'NOT CONNECTED')
+                              : data?.batteryPercent != null &&
+                                    data!.batteryPercent <= 20
                               ? 'LOW BATTERY'
-                              : data.isCharging
+                              : data?.chargingConnected == true
                               ? 'CHARGING'
                               : 'VEHICLE LINKED',
                           style: const TextStyle(
@@ -606,17 +593,18 @@ class _VehicleHero extends StatelessWidget {
 class _BatteryPanel extends StatelessWidget {
   const _BatteryPanel({required this.data, required this.distanceUnit});
 
-  final VehicleData data;
+  final VehicleControlState? data;
   final String distanceUnit;
 
   @override
   Widget build(BuildContext context) {
-    final battery = (data.battery / 100).clamp(0.0, 1.0);
-    final displayRange = DistanceUnitService.format(
-      data.range,
-      distanceUnit,
-      decimals: 0,
-    );
+    final batteryPercent = data?.batteryPercent;
+    final battery = batteryPercent == null
+        ? null
+        : (batteryPercent / 100).clamp(0.0, 1.0);
+    final displayRange = data == null
+        ? 'N/A'
+        : DistanceUnitService.format(data!.rangeKm, distanceUnit, decimals: 0);
     return Container(
       padding: const EdgeInsets.all(21),
       decoration: BoxDecoration(
@@ -644,17 +632,17 @@ class _BatteryPanel extends StatelessWidget {
                   alignment: Alignment.center,
                   children: [
                     TweenAnimationBuilder<double>(
-                      tween: Tween<double>(begin: 0, end: battery),
+                      tween: Tween<double>(begin: 0, end: battery ?? 0),
                       duration: const Duration(milliseconds: 700),
                       curve: Curves.easeOutCubic,
                       builder: (context, value, _) => SizedBox.expand(
                         child: CircularProgressIndicator(
-                          value: value,
+                          value: battery == null ? 0 : value,
                           strokeWidth: 9,
                           strokeCap: StrokeCap.round,
                           backgroundColor: const Color(0xFFE9EEF2),
                           valueColor: AlwaysStoppedAnimation<Color>(
-                            data.battery <= 20
+                            batteryPercent != null && batteryPercent <= 20
                                 ? const Color(0xFFE7A647)
                                 : const Color(0xFF28A985),
                           ),
@@ -665,7 +653,9 @@ class _BatteryPanel extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          '${data.battery.round()}%',
+                          batteryPercent == null
+                              ? 'N/A'
+                              : '${batteryPercent.round()}%',
                           style: const TextStyle(
                             color: AppTheme.navy,
                             fontSize: 25,
@@ -691,7 +681,7 @@ class _BatteryPanel extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      displayRange.split(' ').first,
+                      displayRange,
                       style: const TextStyle(
                         color: AppTheme.navy,
                         fontSize: 39,
@@ -702,14 +692,19 @@ class _BatteryPanel extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${DistanceUnitService.normalize(distanceUnit) == DistanceUnitService.mi ? 'mi' : 'km'} estimated range',
+                      batteryPercent == null
+                          ? 'Connect to the simulator for live range'
+                          : 'estimated range',
                       style: const TextStyle(
                         color: AppTheme.mutedBlue,
                         fontSize: 12,
                       ),
                     ),
                     const SizedBox(height: 14),
-                    _ChargeBadge(isCharging: data.isCharging),
+                    _ChargeBadge(
+                      isCharging: data?.chargingConnected ?? false,
+                      unavailable: data == null,
+                    ),
                   ],
                 ),
               ),
@@ -719,11 +714,11 @@ class _BatteryPanel extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: LinearProgressIndicator(
-              value: battery,
+              value: battery ?? 0,
               minHeight: 6,
               backgroundColor: const Color(0xFFE9EEF2),
               valueColor: AlwaysStoppedAnimation<Color>(
-                data.battery <= 20
+                batteryPercent != null && batteryPercent <= 20
                     ? const Color(0xFFE7A647)
                     : const Color(0xFF28A985),
               ),
@@ -736,32 +731,45 @@ class _BatteryPanel extends StatelessWidget {
 }
 
 class _ChargeBadge extends StatelessWidget {
-  const _ChargeBadge({required this.isCharging});
+  const _ChargeBadge({required this.isCharging, this.unavailable = false});
 
   final bool isCharging;
+  final bool unavailable;
 
   @override
   Widget build(BuildContext context) {
-    final color = isCharging
+    final color = unavailable
+        ? const Color(0xFF526477)
+        : isCharging
         ? const Color(0xFF197B69)
         : const Color(0xFF526477);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
-        color: isCharging ? const Color(0xFFE6F6EF) : const Color(0xFFF0F3F6),
+        color: !unavailable && isCharging
+            ? const Color(0xFFE6F6EF)
+            : const Color(0xFFF0F3F6),
         borderRadius: BorderRadius.circular(30),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            isCharging ? Icons.bolt_rounded : Icons.power_outlined,
+            unavailable
+                ? Icons.bluetooth_disabled
+                : isCharging
+                ? Icons.bolt_rounded
+                : Icons.power_outlined,
             size: 15,
             color: color,
           ),
           const SizedBox(width: 5),
           Text(
-            isCharging ? 'Charging now' : 'Not charging',
+            unavailable
+                ? 'Telemetry unavailable'
+                : isCharging
+                ? 'Charging now'
+                : 'Not charging',
             style: TextStyle(
               color: color,
               fontSize: 11,
@@ -775,17 +783,10 @@ class _ChargeBadge extends StatelessWidget {
 }
 
 class _VehicleHealthSummary extends StatelessWidget {
-  const _VehicleHealthSummary({required this.data});
-
-  final VehicleData data;
+  const _VehicleHealthSummary();
 
   @override
   Widget build(BuildContext context) {
-    final scoreColor = data.healthScore >= 80
-        ? const Color(0xFF21896D)
-        : data.healthScore >= 60
-        ? const Color(0xFFD38A2F)
-        : const Color(0xFFC95454);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
       decoration: BoxDecoration(
@@ -796,57 +797,25 @@ class _VehicleHealthSummary extends StatelessWidget {
         builder: (context, constraints) {
           final compact = constraints.maxWidth < 470;
           final content = [
-            Expanded(
+            const Expanded(
               flex: 2,
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 48,
-                    height: 48,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        CircularProgressIndicator(
-                          value: (data.healthScore / 100).clamp(0.0, 1.0),
-                          strokeWidth: 4,
-                          backgroundColor: Colors.white,
-                          valueColor: AlwaysStoppedAnimation<Color>(scoreColor),
-                        ),
-                        Text(
-                          '${data.healthScore}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: scoreColor,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  const Flexible(
-                    child: Text(
-                      'Vehicle health',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.navy,
-                      ),
-                    ),
-                  ),
-                ],
+              child: Text(
+                'Vehicle health: N/A',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.navy,
+                ),
               ),
             ),
             _SummaryMetric(
               label: 'BATTERY HEALTH',
-              value: '${data.batteryHealth.toStringAsFixed(1)}%',
+              value: 'N/A',
               icon: Icons.favorite_outline,
             ),
             _SummaryMetric(
-              label: 'STATUS',
-              value: data.isCharging ? 'Charging' : 'Ready',
-              icon: data.isCharging
-                  ? Icons.bolt_rounded
-                  : Icons.check_circle_outline,
+              label: 'HEALTH DATA',
+              value: 'Not in BLE feed',
+              icon: Icons.info_outline,
             ),
           ];
           if (compact) {

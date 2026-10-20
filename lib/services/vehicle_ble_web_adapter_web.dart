@@ -8,6 +8,15 @@ import 'vehicle_ble_web_adapter_interface.dart';
 @JS('VehicleBleBridge.isSupported')
 external bool _isSupported();
 
+@JS('VehicleBleBridge.isSecureContext')
+external bool _isSecureContext();
+
+@JS('VehicleBleBridge.bluetoothPolicyStatus')
+external String _bluetoothPolicyStatus();
+
+@JS('VehicleBleBridge.getAvailabilityStatus')
+external JSPromise<JSString> _getAvailabilityStatus();
+
 @JS('VehicleBleBridge.requestDevice')
 external JSPromise<JSObject> _requestDevice(String serviceUuid);
 
@@ -17,10 +26,12 @@ external JSPromise<JSObject> _connect(JSObject device);
 @JS('VehicleBleBridge.getDeviceName')
 external String? _getDeviceName(JSObject device);
 
+@JS('VehicleBleBridge.getService')
+external JSPromise<JSObject> _getService(JSObject server, String serviceUuid);
+
 @JS('VehicleBleBridge.getCharacteristic')
 external JSPromise<JSObject> _getCharacteristic(
-  JSObject server,
-  String serviceUuid,
+  JSObject service,
   String characteristicUuid,
 );
 
@@ -71,6 +82,12 @@ class _BrowserVehicleBleAdapter implements VehicleBleWebAdapter {
   bool get isSupported => _isSupported();
 
   @override
+  bool get isSecureContext => _isSecureContext();
+
+  @override
+  String get bluetoothPolicyStatus => _bluetoothPolicyStatus();
+
+  @override
   bool get hasSelectedDevice => _device != null;
 
   @override
@@ -80,12 +97,18 @@ class _BrowserVehicleBleAdapter implements VehicleBleWebAdapter {
   }
 
   @override
+  Future<String> getAvailabilityStatus() async =>
+      (await _getAvailabilityStatus().toDart).toDart;
+
+  @override
   Future<VehicleBleWebConnection> connect({
     required bool requestDevice,
     void Function()? onConnecting,
+    void Function(String stage)? onStage,
   }) async {
     if (requestDevice) {
       _device = await _requestDevice(vehicleControlServiceUuid).toDart;
+      onStage?.call('DEVICE_SELECTED');
     }
     final device = _device;
     if (device == null) {
@@ -93,19 +116,27 @@ class _BrowserVehicleBleAdapter implements VehicleBleWebAdapter {
     }
     onConnecting?.call();
     try {
+      onStage?.call('GATT_CONNECT_STARTED');
       final server = await _connect(
         device,
       ).toDart.timeout(_gattOperationTimeout);
-      final stateCharacteristic = await _getCharacteristic(
+      onStage?.call('GATT_CONNECTED');
+      onStage?.call('GATT_SERVICE_DISCOVERY_STARTED');
+      final service = await _getService(
         server,
         vehicleControlServiceUuid,
+      ).toDart.timeout(_gattOperationTimeout);
+      onStage?.call('GATT_SERVICE_DISCOVERY_SUCCEEDED');
+      onStage?.call('GATT_CHARACTERISTIC_DISCOVERY_STARTED');
+      final stateCharacteristic = await _getCharacteristic(
+        service,
         vehicleStateCharacteristicUuid,
       ).toDart.timeout(_gattOperationTimeout);
       final commandCharacteristic = await _getCharacteristic(
-        server,
-        vehicleControlServiceUuid,
+        service,
         vehicleCommandCharacteristicUuid,
       ).toDart.timeout(_gattOperationTimeout);
+      onStage?.call('GATT_CHARACTERISTIC_DISCOVERY_SUCCEEDED');
       return _BrowserVehicleBleConnection(
         device: device,
         stateCharacteristic: stateCharacteristic,

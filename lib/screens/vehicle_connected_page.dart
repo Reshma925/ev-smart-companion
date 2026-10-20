@@ -21,18 +21,18 @@ class VehicleConnectedPage extends StatelessWidget {
                 width: 88,
                 height: 88,
                 decoration: const BoxDecoration(
-                  color: Color(0xFFE5F8EF),
+                  color: Color(0xFFE8F3FC),
                   shape: BoxShape.circle,
                 ),
                 child: const Icon(
-                  Icons.bluetooth_connected,
-                  color: Color(0xFF20A36A),
+                  Icons.bluetooth_disabled,
+                  color: AppTheme.blue,
                   size: 48,
                 ),
               ),
               const SizedBox(height: 24),
               const Text(
-                'Connected ✓',
+                'Vehicle profile ready',
                 style: TextStyle(
                   fontSize: 28,
                   fontWeight: FontWeight.w700,
@@ -60,12 +60,12 @@ class VehicleConnectedPage extends StatelessWidget {
               ],
               const SizedBox(height: 18),
               const _StatusRow(
-                icon: Icons.bluetooth_searching,
-                label: 'Simulator preview (BLE not configured)',
+                icon: Icons.bluetooth_disabled,
+                label: 'Bluetooth connection not established',
               ),
               const _StatusRow(
                 icon: Icons.lock_outline,
-                label: 'Firestore vehicle identity loaded',
+                label: 'Vehicle identity loaded from Firestore',
               ),
               const SizedBox(height: 28),
               PrimaryButton(
@@ -85,6 +85,7 @@ class VehicleConnectedPage extends StatelessWidget {
     );
   }
 }
+
 class _StatusRow extends StatelessWidget {
   const _StatusRow({required this.icon, required this.label});
   final IconData icon;
@@ -95,7 +96,7 @@ class _StatusRow extends StatelessWidget {
     padding: const EdgeInsets.symmetric(vertical: 8),
     child: Row(
       children: [
-        Icon(icon, color: const Color(0xFF20A36A), size: 21),
+        Icon(icon, color: AppTheme.blue, size: 21),
         const SizedBox(width: 12),
         Text(
           label,
@@ -104,8 +105,6 @@ class _StatusRow extends StatelessWidget {
             fontWeight: FontWeight.w600,
           ),
         ),
-        const Spacer(),
-        const Icon(Icons.check_circle, color: Color(0xFF20A36A), size: 18),
       ],
     ),
   );

@@ -1,32 +1,88 @@
 # Vehicle BLE demo
 
-The Controls page in the main EV Smart Companion app acts as the BLE central.
-For the laptop demonstration, run the main app in Chrome on macOS and run the
-separate `vehicle_simulator/` Android app as the BLE peripheral on the Samsung
-phone. The simulator sends all demo state over BLE; it does not write to
-Firestore. The main app accepts state only when its `vehicleId` matches the
-vehicle selected by the signed-in user.
+The authenticated Vehicle connection screen and Controls page in the main EV
+Smart Companion app use the shared BLE central. The user must click
+**Connect Vehicle** on either screen to start a connection; opening the app or
+Controls does not start BLE automatically. For the demonstration, run the main
+app in desktop Chrome and run the separate `vehicle_simulator/` Android app as
+the BLE peripheral on the Samsung phone. The simulator sends all demo state
+over BLE; it does not write to Firestore. The main app accepts state only when
+its `vehicleId` matches the vehicle selected by the signed-in user.
+
+Firebase restores a valid persistent sign-in session on launch. A restored
+session proceeds to the Vehicle connection screen without showing Login;
+signing out returns to Login.
 
 Chrome Web Bluetooth requires a secure context (HTTPS, or localhost), an
-enabled Bluetooth adapter, and user permission from Chrome's device chooser.
-The user must click **Connect Vehicle** to open that chooser. If the BLE link is
-lost after selection, the app retries the selected device with bounded
+enabled Bluetooth adapter, a supported desktop browser/operating system, and
+user permission from Chrome's device chooser. The Controls connection panel
+reports API support, secure-context status, adapter availability (when exposed
+by the browser), and Bluetooth permissions-policy status. If the API is
+missing, use current desktop Chrome or Edge and open the app directly rather
+than in a restricted iframe.
+On the web, click **Connect Vehicle** to open the browser chooser. On Android,
+the same action begins BLE discovery. If the BLE link is lost after selection,
+the app retries the selected device with bounded
 backoff; after retries are exhausted, click **Reconnect** to retry. Use
 **Disconnect** to intentionally stop the link.
 The chooser and device permission are managed by Chrome, not Firebase.
+
+## Run on Windows PowerShell
+
+Start each command group in its own terminal. Keep the Functions emulator and
+the simulator running while using the web app.
+
+**Terminal 1 — Firebase Functions emulator**
+
+```powershell
+Set-Location "C:\Users\pradh\OneDrive\Desktop\volt_sync"
+firebase emulators:start --only functions --project smart-ev-learning-companion
+```
+
+**Terminal 2 — BLE peripheral on the Android phone**
+
+```powershell
+Set-Location "C:\Users\pradh\OneDrive\Desktop\volt_sync\vehicle_simulator"
+flutter run -d RZCW8043N1N
+```
+
+If that device ID changes, run `flutter devices` in this terminal and use the
+ID shown for the connected phone.
+
+**Terminal 3 — Main app in Chrome**
+
+```powershell
+Set-Location "C:\Users\pradh\OneDrive\Desktop\volt_sync"
+flutter run -d chrome --web-hostname localhost --web-port 5100
+```
+
+In the simulator, enter the selected Firestore vehicle document ID and start
+advertising. In the web app, click **Connect Vehicle** on the Vehicle
+connection screen or in **Vehicle controls**. Select `EV-Simulator-01` from
+Chrome's chooser. A successful BLE state is shown only after a valid snapshot
+for the selected vehicle arrives.
+
+The simulator's **Vehicle ID** must exactly match the selected vehicle
+document ID shown on the Controls page. It is not the registration number, VIN,
+model, Bluetooth device name, or Bluetooth device ID. On mismatch, the BLE
+client reports both document IDs and disconnects without retrying the same
+incorrect identity; correct the simulator ID, stop/restart its advertising,
+then retry from Controls.
 
 ## Run the demo
 
 1. Serve the Flutter Web app from `localhost` during development or from an
    HTTPS origin for the demonstration. Build with `flutter build web` before
    deploying it.
-2. Open the app in current Google Chrome on the MacBook and sign in normally.
-   Open Controls and copy the displayed vehicle document ID.
+2. Open the app in current desktop Google Chrome and sign in normally (a
+   restored Firebase session may already be signed in). Open Controls and copy
+   the displayed vehicle document ID.
 3. From `vehicle_simulator/`, run the simulator on the Samsung phone. Enter the
    same vehicle ID and start the simulator. Allow Android's nearby-device/
    Bluetooth advertising permissions and leave the simulator open.
-4. On the Mac, open Controls and click **Connect Vehicle**. Select the
-   `EV-Simulator-01` device in Chrome's chooser and grant access.
+4. In Chrome, click **Connect Vehicle** on the Vehicle connection screen or
+   Controls. Select the `EV-Simulator-01` device in Chrome's chooser and grant
+   access.
 5. The dashboard reports a BLE connection only after it receives and validates
    a state snapshot for the selected vehicle ID. Use the simulator controls to
    change state and verify real-time updates; choose **Vehicle disconnected**
@@ -39,9 +95,27 @@ interruption, and intentional BLE disconnect/reconnect. Charging state
 advances in the simulator and stops at the configured target. Its local event
 log keeps the most recent 40 demo events.
 
-The browser only accepts live vehicle control state from a valid BLE snapshot;
-when BLE is disconnected, any separately available Firestore telemetry remains
-cloud telemetry and is not represented as a BLE connection.
+## Application-wide vehicle data
+
+The app uses one application-scoped `VehicleBleClient`. Controls, dashboard,
+vehicle health, charging map, trip planner, maintenance, learning, profile,
+and vehicle details consume the same validated BLE snapshot. The Chrome device chooser is opened by the user-triggered **Connect Vehicle**
+action on the Vehicle connection screen or Controls; opening other pages never
+starts a second BLE connection.
+
+Live battery, range, speed, charging, and control-state values are shown only
+when a snapshot for the currently selected Firestore vehicle document ID is
+available. Disconnecting clears the shared snapshot, so consumers immediately
+show unavailable values. The protocol is event-driven and does not send a
+heartbeat; the app does not invent a stale timeout, and considers the last
+snapshot current while the BLE link remains connected.
+
+Firestore remains the source for vehicle/account metadata, station data,
+service history, and Controls preferences. It is not a fallback source for
+live measurements. The BLE schema does not include battery health, health
+scores, motor temperature, tire pressure/condition, odometer, voltage, or
+similar diagnostics; those remain unavailable rather than being inferred from
+Firestore or vehicle configuration.
 
 Controls preferences are stored at
 `users/{uid}/vehicles/{vehicleId}/controls/preferences`. On first access, the

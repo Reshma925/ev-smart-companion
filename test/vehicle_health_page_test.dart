@@ -3,12 +3,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
 import 'package:flutter_application_2/screens/vehicle_health_page.dart';
 import 'package:flutter_application_2/services/firestore_service.dart';
+import 'package:flutter_application_2/services/vehicle_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 void main() {
   testWidgets('shows responsive health sections and opens component details', (
     tester,
   ) async {
+    final ble = VehicleBleClient.shared;
+    ble.snapshot.value = const VehicleStateSnapshot(
+      vehicleId: 'health-page-test-ev',
+      sequence: 1,
+      timestampMillis: 1,
+      state: VehicleControlState(batteryPercent: 42, rangeKm: 141),
+    );
+    addTearDown(() => ble.snapshot.value = null);
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -84,15 +94,19 @@ void main() {
     );
     expect(find.text('Charging simulator'), findsNothing);
     expect(find.text('Predictive maintenance'), findsNothing);
-    expect(find.text('Brake inspection'), findsNWidgets(2));
+    expect(find.text('Brake inspection'), findsOneWidget);
+    expect(find.text('42%'), findsWidgets);
+    expect(find.text('72%'), findsNothing);
+    expect(find.text('87'), findsNothing);
     expect(tester.takeException(), isNull);
 
-    final batteryCard = find.text('Battery').first;
+    final batteryCard = find.text('Battery').last;
     await tester.ensureVisible(batteryCard);
     await tester.tap(batteryCard);
     await tester.pumpAndSettle();
     expect(find.text('Current charge'), findsWidgets);
-    expect(find.text('72%'), findsWidgets);
+    expect(find.text('42%'), findsWidgets);
+    expect(find.text('72%'), findsNothing);
     expect(find.text('Charging cycles'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

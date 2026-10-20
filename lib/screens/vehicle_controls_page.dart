@@ -7,7 +7,6 @@ import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../models/vehicle_controls.dart';
-import '../models/vehicle_telemetry.dart';
 import '../services/firestore_service.dart';
 import '../services/vehicle_ble_client.dart';
 import '../services/vehicle_controls_preferences_error.dart';
@@ -29,10 +28,7 @@ class VehicleControlsPage extends StatefulWidget {
 class _VehicleControlsPageState extends State<VehicleControlsPage> {
   late final FirestoreService _firestore =
       widget.firestoreService ?? FirestoreService();
-  late final VehicleBleClient _ble = VehicleBleClient();
-  late final Stream<VehicleData?> _telemetry = _firestore.watchVehicleTelemetry(
-    widget.vehicle.id,
-  );
+  final VehicleBleClient _ble = VehicleBleClient.shared;
   late VehicleAlertEngine _alertEngine;
 
   VehicleControlsPreferences _preferences = const VehicleControlsPreferences();
@@ -49,6 +45,11 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
     super.initState();
     _ble.addListener(_onBleChanged);
     _ble.snapshot.addListener(_onSnapshotChanged);
+    if (kIsWeb) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_ble.inspectWebCapabilities());
+      });
+    }
     unawaited(_initialize());
   }
 
@@ -78,6 +79,10 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
         vehicleId: widget.vehicle.id,
       );
       if (!mounted) return;
+      if (FirebaseAuth.instance.currentUser?.uid != user.uid) {
+        await _ble.disconnect();
+        return;
+      }
       setState(() {
         _preferences = preferences;
         _preferencesLoading = false;
@@ -85,6 +90,7 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       _alertEngine = VehicleAlertEngine(
         activeKeys: preferences.activeAlertKeys,
       );
+      _onSnapshotChanged();
     } catch (error, stackTrace) {
       final projectId = FirebaseAuth.instance.app.options.projectId;
       if (error is FirebaseException) {
@@ -107,18 +113,6 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       });
       return;
     }
-    if (!kIsWeb) {
-      try {
-        await _ble.start(widget.vehicle.id);
-      } catch (error) {
-        debugPrint(
-          '[Vehicle Controls] BLE startup failed: ${error.runtimeType}',
-        );
-        _showMessage(
-          'Bluetooth could not start. Retry from the connection card.',
-        );
-      }
-    }
   }
 
   void _onBleChanged() {
@@ -127,7 +121,12 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
 
   void _onSnapshotChanged() {
     final snapshot = _ble.snapshot.value;
-    if (snapshot == null || !mounted) return;
+    if (snapshot == null ||
+        !mounted ||
+        _preferencesLoading ||
+        snapshot.vehicleId != widget.vehicle.id) {
+      return;
+    }
     final newAlerts = _alertEngine.evaluate(snapshot);
     final activeAlertKeys = _alertEngine.activeKeys.toList()..sort();
     final activeAlertsChanged = !setEquals(
@@ -238,6 +237,10 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
     int? level,
     double? temperatureC,
   }) async {
+    if (!_ble.isConnected || _ble.vehicleId != widget.vehicle.id) {
+      _showMessage('Connect this vehicle before sending a command.');
+      return;
+    }
     try {
       await _ble.send(
         VehicleControlCommand(
@@ -323,7 +326,7 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
   }
 
   Future<void> _applyProfile(PassengerProfile profile) async {
-    if (!_ble.isConnected) return;
+    if (!_ble.isConnected || _ble.vehicleId != widget.vehicle.id) return;
     await _send('climate', enabled: true);
     await _send(
       'targetTemperature',
@@ -360,7 +363,6 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
   void dispose() {
     _ble.removeListener(_onBleChanged);
     _ble.snapshot.removeListener(_onSnapshotChanged);
-    _ble.dispose();
     super.dispose();
   }
 
@@ -416,130 +418,131 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
         const SizedBox(height: 14),
         AnimatedBuilder(
           animation: _ble,
-          builder: (context, _) => _BleStatusCard(
-            phase: _ble.phase,
-            error: _ble.error,
-            onRetry: () => _ble.start(widget.vehicle.id),
-            onConnect: () => _ble.start(widget.vehicle.id),
-            onDisconnect: () => unawaited(_ble.disconnect()),
-            isWeb: kIsWeb,
-            deviceName: _ble.selectedDeviceName,
-            lastDataUpdate: _ble.lastDataUpdate,
-          ),
+          builder: (context, _) {
+            final matchesVehicle = _ble.vehicleId == widget.vehicle.id;
+            return _BleStatusCard(
+              phase: matchesVehicle ? _ble.phase : VehicleBlePhase.stopped,
+              error: matchesVehicle ? _ble.error : null,
+              onRetry: () => _ble.start(widget.vehicle.id),
+              onConnect: () => _ble.start(widget.vehicle.id),
+              onDisconnect: () => unawaited(_ble.disconnect()),
+              isWeb: kIsWeb,
+              webBluetoothSupported: kIsWeb && _ble.isSupported,
+              secureContext: _ble.secureContext,
+              policyStatus: _ble.bluetoothPolicyStatus,
+              availabilityStatus: _ble.availabilityStatus,
+              availabilityError: _ble.availabilityError,
+              deviceName: matchesVehicle ? _ble.selectedDeviceName : null,
+              lastDataUpdate: matchesVehicle ? _ble.lastDataUpdate : null,
+            );
+          },
         ),
         if (kIsWeb) ...[const SizedBox(height: 8), const _WebBleNotice()],
         const SizedBox(height: 14),
-        StreamBuilder<VehicleData?>(
-          stream: _telemetry,
-          builder: (context, telemetrySnapshot) {
-            final telemetry = telemetrySnapshot.data;
-            return ValueListenableBuilder<VehicleStateSnapshot?>(
-              valueListenable: _ble.snapshot,
-              builder: (context, liveSnapshot, _) {
-                final state = liveSnapshot?.state;
-                final statusPanel = _VehicleStatusPanel(state: state);
-                final vehiclePanel = _VehicleDoorPanel(
-                  state: state,
-                  enabled: _ble.isConnected,
-                  speedKph: state?.speedKph ?? 0,
-                  pendingWindowLevels: _pendingWindowLevels,
-                  onDoorOpenChanged: (door, open) =>
-                      _send('doorOpen', door: door, enabled: open),
-                  onDoorLockChanged: (door, locked) =>
-                      _send('doorLock', door: door, enabled: locked),
-                  onWindowChanged: (door, level) =>
-                      setState(() => _pendingWindowLevels[door] = level),
-                  onWindowChangeEnd: (door, level) {
-                    setState(() => _pendingWindowLevels.remove(door));
-                    unawaited(
-                      _send('windowLevel', door: door, level: level.round()),
-                    );
-                  },
-                );
-                final quickControls = _VehicleActionsPanel(
-                  state: state,
-                  enabled: _ble.isConnected,
-                  onVehicleOnChanged: (value) =>
-                      _send('vehicleOn', enabled: value),
-                  onHeadlightsChanged: (value) =>
-                      _send('headlights', enabled: value),
-                );
-                final climatePanel = _ClimatePanel(
-                  state: state,
-                  enabled: _ble.isConnected,
-                  pendingTemperature: _pendingTemperature,
-                  onTemperatureChanged: (value) =>
-                      setState(() => _pendingTemperature = value),
-                  onTemperatureChangeEnd: (value) {
-                    setState(() => _pendingTemperature = null);
-                    unawaited(_send('targetTemperature', temperatureC: value));
-                  },
-                  onClimateChanged: (enabled) =>
-                      _send('climate', enabled: enabled),
-                  onFanChanged: (level) => _send('fanLevel', level: level),
-                  onSeatHeatingChanged: (enabled) =>
-                      _send('seatHeating', enabled: enabled),
-                );
-                final chargingPanel = _ChargingPanel(
-                  state: state,
-                  enabled: _ble.isConnected,
-                  onChargingChanged: (connected) =>
-                      _send('chargingConnected', enabled: connected),
-                  onTargetChanged: (value) =>
-                      _send('targetCharge', level: value),
-                );
-
-                return Column(
-                  children: [
-                    statusPanel,
-                    if (telemetry != null) ...[
-                      const SizedBox(height: 8),
-                      _CloudTelemetryNote(telemetry: telemetry),
-                    ],
-                    const SizedBox(height: 14),
-                    quickControls,
-                    const SizedBox(height: 14),
-                    if (wide)
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(child: vehiclePanel),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              children: [
-                                climatePanel,
-                                const SizedBox(height: 14),
-                                chargingPanel,
-                              ],
-                            ),
-                          ),
-                        ],
-                      )
-                    else ...[
-                      vehiclePanel,
-                      const SizedBox(height: 14),
-                      climatePanel,
-                      const SizedBox(height: 14),
-                      chargingPanel,
-                    ],
-                    const SizedBox(height: 14),
-                    _PassengerProfilesPanel(
-                      preferences: _preferences,
-                      enabled: _ble.isConnected,
-                      onAdd: _addPassengerProfile,
-                      onEdit: _editPassengerProfile,
-                      onSelected: _selectPassengerProfile,
-                      onDelete: _deletePassengerProfile,
-                    ),
-                    const SizedBox(height: 14),
-                    _AlertsPanel(
-                      preferences: _preferences,
-                      onSettings: _showNotificationSettings,
-                    ),
-                  ],
+        ValueListenableBuilder<VehicleStateSnapshot?>(
+          valueListenable: _ble.snapshot,
+          builder: (context, liveSnapshot, _) {
+            final connected =
+                _ble.isConnected && _ble.vehicleId == widget.vehicle.id;
+            final matchingSnapshot =
+                liveSnapshot?.vehicleId == widget.vehicle.id
+                ? liveSnapshot
+                : null;
+            final state = matchingSnapshot?.state;
+            final statusPanel = _VehicleStatusPanel(state: state);
+            final vehiclePanel = _VehicleDoorPanel(
+              state: state,
+              enabled: connected,
+              speedKph: state?.speedKph ?? 0,
+              pendingWindowLevels: _pendingWindowLevels,
+              onDoorOpenChanged: (door, open) =>
+                  _send('doorOpen', door: door, enabled: open),
+              onDoorLockChanged: (door, locked) =>
+                  _send('doorLock', door: door, enabled: locked),
+              onWindowChanged: (door, level) =>
+                  setState(() => _pendingWindowLevels[door] = level),
+              onWindowChangeEnd: (door, level) {
+                setState(() => _pendingWindowLevels.remove(door));
+                unawaited(
+                  _send('windowLevel', door: door, level: level.round()),
                 );
               },
+            );
+            final quickControls = _VehicleActionsPanel(
+              state: state,
+              enabled: connected,
+              onVehicleOnChanged: (value) => _send('vehicleOn', enabled: value),
+              onHeadlightsChanged: (value) =>
+                  _send('headlights', enabled: value),
+            );
+            final climatePanel = _ClimatePanel(
+              state: state,
+              enabled: connected,
+              pendingTemperature: _pendingTemperature,
+              onTemperatureChanged: (value) =>
+                  setState(() => _pendingTemperature = value),
+              onTemperatureChangeEnd: (value) {
+                setState(() => _pendingTemperature = null);
+                unawaited(_send('targetTemperature', temperatureC: value));
+              },
+              onClimateChanged: (enabled) => _send('climate', enabled: enabled),
+              onFanChanged: (level) => _send('fanLevel', level: level),
+              onSeatHeatingChanged: (enabled) =>
+                  _send('seatHeating', enabled: enabled),
+            );
+            final chargingPanel = _ChargingPanel(
+              state: state,
+              enabled: connected,
+              onChargingChanged: (connected) =>
+                  _send('chargingConnected', enabled: connected),
+              onTargetChanged: (value) => _send('targetCharge', level: value),
+            );
+
+            return Column(
+              children: [
+                statusPanel,
+                const SizedBox(height: 14),
+                quickControls,
+                const SizedBox(height: 14),
+                if (wide)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: vehiclePanel),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          children: [
+                            climatePanel,
+                            const SizedBox(height: 14),
+                            chargingPanel,
+                          ],
+                        ),
+                      ),
+                    ],
+                  )
+                else ...[
+                  vehiclePanel,
+                  const SizedBox(height: 14),
+                  climatePanel,
+                  const SizedBox(height: 14),
+                  chargingPanel,
+                ],
+                const SizedBox(height: 14),
+                _PassengerProfilesPanel(
+                  preferences: _preferences,
+                  enabled: connected,
+                  onAdd: _addPassengerProfile,
+                  onEdit: _editPassengerProfile,
+                  onSelected: _selectPassengerProfile,
+                  onDelete: _deletePassengerProfile,
+                ),
+                const SizedBox(height: 14),
+                _AlertsPanel(
+                  preferences: _preferences,
+                  onSettings: _showNotificationSettings,
+                ),
+              ],
             );
           },
         ),
@@ -603,6 +606,11 @@ class _BleStatusCard extends StatelessWidget {
     required this.onConnect,
     required this.onDisconnect,
     required this.isWeb,
+    required this.webBluetoothSupported,
+    required this.secureContext,
+    required this.policyStatus,
+    required this.availabilityStatus,
+    required this.availabilityError,
     required this.deviceName,
     required this.lastDataUpdate,
   });
@@ -613,6 +621,11 @@ class _BleStatusCard extends StatelessWidget {
   final VoidCallback onConnect;
   final VoidCallback onDisconnect;
   final bool isWeb;
+  final bool webBluetoothSupported;
+  final bool? secureContext;
+  final String? policyStatus;
+  final String? availabilityStatus;
+  final String? availabilityError;
   final String? deviceName;
   final DateTime? lastDataUpdate;
 
@@ -622,7 +635,14 @@ class _BleStatusCard extends StatelessWidget {
     final message = switch (phase) {
       VehicleBlePhase.unsupported =>
         isWeb
-            ? 'Web Bluetooth is unavailable in this browser or page context.'
+            ? !webBluetoothSupported
+                  ? 'Web Bluetooth API is unavailable. Use desktop Chrome or Edge on a supported operating system.'
+                  : secureContext == false
+                  ? 'Web Bluetooth requires HTTPS or localhost.'
+                  : policyStatus == 'blocked'
+                  ? 'This page is blocked from using Bluetooth by its permissions policy.'
+                  : error ??
+                        'Web Bluetooth is unavailable in this page context.'
             : 'Bluetooth vehicle connection requires a physical Android device.',
       VehicleBlePhase.authorizing => 'Requesting Bluetooth permission…',
       VehicleBlePhase.scanning =>
@@ -632,12 +652,31 @@ class _BleStatusCard extends StatelessWidget {
       VehicleBlePhase.selectingDevice =>
         'Select the EV simulator in Chrome’s Bluetooth device chooser…',
       VehicleBlePhase.connecting => 'Connecting to the vehicle simulator…',
+      VehicleBlePhase.gattConnected =>
+        'GATT connected · preparing service discovery…',
+      VehicleBlePhase.discoveringServices =>
+        'GATT connected · discovering vehicle service…',
+      VehicleBlePhase.discoveringCharacteristics =>
+        'Vehicle service found · discovering characteristics…',
+      VehicleBlePhase.subscribingNotifications =>
+        'Characteristics found · subscribing to telemetry…',
+      VehicleBlePhase.awaitingTelemetry =>
+        'Connected — waiting for vehicle data',
+      VehicleBlePhase.identityMismatch =>
+        error ??
+            'Simulator vehicle identity does not match the selected vehicle.',
       VehicleBlePhase.connected => 'Connected · receiving live vehicle state',
       VehicleBlePhase.reconnecting => 'Connection interrupted · reconnecting…',
       VehicleBlePhase.error => error ?? 'Bluetooth connection failed.',
       VehicleBlePhase.stopped => 'Vehicle simulator is not connected.',
     };
-    final color = connected ? const Color(0xFF13845A) : AppTheme.mutedBlue;
+    final color = connected
+        ? const Color(0xFF13845A)
+        : phase == VehicleBlePhase.awaitingTelemetry
+        ? const Color(0xFFB26A00)
+        : phase == VehicleBlePhase.identityMismatch
+        ? Colors.red.shade700
+        : AppTheme.mutedBlue;
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
@@ -682,6 +721,31 @@ class _BleStatusCard extends StatelessWidget {
                       fontSize: 12,
                     ),
                   ),
+                  if (isWeb) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Web Bluetooth API: ${webBluetoothSupported ? 'available' : 'missing'} · '
+                      'Secure context: ${secureContext == null
+                          ? 'checking'
+                          : secureContext!
+                          ? 'yes'
+                          : 'no'} · '
+                      'Bluetooth: ${availabilityStatus ?? (availabilityError == null ? 'checking' : 'unknown')} · '
+                      'Page policy: ${policyStatus ?? 'checking'}',
+                      style: const TextStyle(
+                        color: AppTheme.mutedBlue,
+                        fontSize: 11,
+                      ),
+                    ),
+                    if (availabilityError != null)
+                      Text(
+                        'Availability check error: $availabilityError',
+                        style: TextStyle(
+                          color: Colors.orange.shade900,
+                          fontSize: 11,
+                        ),
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -693,11 +757,18 @@ class _BleStatusCard extends StatelessWidget {
             else if (isWeb &&
                 phase != VehicleBlePhase.unsupported &&
                 phase != VehicleBlePhase.selectingDevice &&
-                phase != VehicleBlePhase.connecting)
+                phase != VehicleBlePhase.connecting &&
+                phase != VehicleBlePhase.gattConnected &&
+                phase != VehicleBlePhase.discoveringServices &&
+                phase != VehicleBlePhase.discoveringCharacteristics &&
+                phase != VehicleBlePhase.subscribingNotifications &&
+                phase != VehicleBlePhase.awaitingTelemetry)
               FilledButton(
                 onPressed: onConnect,
                 child: Text(
-                  phase == VehicleBlePhase.reconnecting
+                  phase == VehicleBlePhase.identityMismatch
+                      ? 'Retry after correcting ID'
+                      : phase == VehicleBlePhase.reconnecting
                       ? 'Reconnect'
                       : 'Connect Vehicle',
                 ),
@@ -710,6 +781,8 @@ class _BleStatusCard extends StatelessWidget {
                 child: Text(
                   phase == VehicleBlePhase.reconnecting
                       ? 'Reconnect now'
+                      : phase == VehicleBlePhase.stopped
+                      ? 'Connect Vehicle'
                       : 'Retry',
                 ),
               ),
@@ -733,7 +806,7 @@ class _WebBleNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const Text(
-    'Chrome Web Bluetooth needs HTTPS or localhost, Bluetooth enabled, and permission for the selected device. Connection starts only after you choose Connect Vehicle.',
+    'Use current desktop Chrome or Edge on HTTPS or localhost, with Bluetooth enabled. Open the app directly if an embedded page blocks Bluetooth. Connection starts only when you click Connect Vehicle and choose the simulator.',
     style: TextStyle(color: AppTheme.mutedBlue, height: 1.4),
   );
 }
@@ -800,30 +873,6 @@ class _VehicleStatusPanel extends StatelessWidget {
       ),
     );
   }
-}
-
-class _CloudTelemetryNote extends StatelessWidget {
-  const _CloudTelemetryNote({required this.telemetry});
-
-  final VehicleData telemetry;
-
-  @override
-  Widget build(BuildContext context) => _Panel(
-    title: 'Cloud telemetry · separate from BLE',
-    subtitle:
-        'Firebase vehicle record. These values do not indicate a simulator connection.',
-    child: Wrap(
-      spacing: 12,
-      runSpacing: 8,
-      children: [
-        Text('Battery: ${telemetry.battery.round()}%'),
-        Text('Range: ${telemetry.range.round()} km'),
-        Text('Charging: ${telemetry.isCharging ? 'Yes' : 'No'}'),
-        if (telemetry.updatedAt != null)
-          Text('Updated: ${_formatDataTime(telemetry.updatedAt!)}'),
-      ],
-    ),
-  );
 }
 
 class _Metric {

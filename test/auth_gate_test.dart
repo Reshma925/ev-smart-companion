@@ -1,0 +1,160 @@
+import 'dart:async';
+
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_application_2/screens/auth_gate.dart';
+import 'package:flutter_application_2/screens/login_page.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+class _TestUser implements User {
+  @override
+  String get uid => 'authenticated-test-user';
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+void main() {
+  testWidgets('unauthenticated startup displays Login and no vehicle screen', (
+    tester,
+  ) async {
+    final authChanges = StreamController<User?>.broadcast();
+    addTearDown(authChanges.close);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthGate(
+          authStateChanges: authChanges.stream,
+          authenticatedDestinationBuilder: (_) async =>
+              const Text('Protected vehicle screen'),
+        ),
+      ),
+    );
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.text('Protected vehicle screen'), findsNothing);
+
+    authChanges.add(null);
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Welcome Back'), findsOneWidget);
+    expect(find.text('Protected vehicle screen'), findsNothing);
+
+    await tester.ensureVisible(find.text('Sign Up'));
+    await tester.tap(find.text('Sign Up'));
+    await tester.pumpAndSettle();
+    expect(find.text('Create Your Account'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Log In'));
+    await tester.tap(find.text('Log In'));
+    await tester.pumpAndSettle();
+    expect(find.text('Welcome Back'), findsOneWidget);
+  });
+
+  testWidgets('restored authenticated session loads its destination', (
+    tester,
+  ) async {
+    final authChanges = StreamController<User?>.broadcast();
+    addTearDown(authChanges.close);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthGate(
+          authStateChanges: authChanges.stream,
+          authenticatedDestinationBuilder: (_) async =>
+              const Scaffold(body: Text('Vehicle connection')),
+        ),
+      ),
+    );
+    expect(find.text('Welcome Back'), findsNothing);
+
+    authChanges.add(_TestUser());
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Vehicle connection'), findsOneWidget);
+    expect(find.text('Welcome Back'), findsNothing);
+
+    authChanges.add(null);
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Welcome Back'), findsOneWidget);
+    expect(find.text('Vehicle connection'), findsNothing);
+  });
+
+  testWidgets('successful Login follows Firebase auth state into the app', (
+    tester,
+  ) async {
+    final authChanges = StreamController<User?>.broadcast();
+    addTearDown(authChanges.close);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthGate(
+          authStateChanges: authChanges.stream,
+          loginPageBuilder: (_) => LoginPage(
+            emailLoginAction: (email, password) async {
+              expect(email, 'driver@example.com');
+              expect(password, 'CorrectHorse1');
+              authChanges.add(_TestUser());
+            },
+            errorMessageBuilder: (error) => error.toString(),
+          ),
+          authenticatedDestinationBuilder: (_) async =>
+              const Scaffold(body: Text('Vehicle connection')),
+        ),
+      ),
+    );
+    authChanges.add(null);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'driver@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), 'CorrectHorse1');
+    await tester.tap(find.text('LOG IN'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Vehicle connection'), findsOneWidget);
+    expect(find.text('Welcome Back'), findsNothing);
+  });
+
+  testWidgets('failed Login remains on Login and displays an error', (
+    tester,
+  ) async {
+    final authChanges = StreamController<User?>.broadcast();
+    addTearDown(authChanges.close);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthGate(
+          authStateChanges: authChanges.stream,
+          loginPageBuilder: (_) => LoginPage(
+            emailLoginAction: (_, _) async {
+              throw StateError('Email or password is incorrect.');
+            },
+            errorMessageBuilder: (error) => error.toString(),
+          ),
+          authenticatedDestinationBuilder: (_) async =>
+              const Scaffold(body: Text('Protected vehicle screen')),
+        ),
+      ),
+    );
+    authChanges.add(null);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'driver@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), 'incorrect');
+    await tester.tap(find.text('LOG IN'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('Welcome Back'), findsOneWidget);
+    expect(
+      find.text('Bad state: Email or password is incorrect.'),
+      findsOneWidget,
+    );
+    expect(find.text('Protected vehicle screen'), findsNothing);
+  });
+}

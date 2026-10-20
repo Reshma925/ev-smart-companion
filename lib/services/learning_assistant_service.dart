@@ -2,9 +2,9 @@ import 'dart:convert';
 
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../models/vehicle.dart';
-import '../models/vehicle_telemetry.dart';
 
 class LearningVehicleContext {
   const LearningVehicleContext({
@@ -13,7 +13,7 @@ class LearningVehicleContext {
   });
 
   final Vehicle? vehicle;
-  final VehicleData? telemetry;
+  final VehicleControlState? telemetry;
 
   bool get hasData => vehicle != null || telemetry != null;
 
@@ -25,11 +25,9 @@ class LearningVehicleContext {
     }
     final data = telemetry;
     if (data != null) {
-      context['batteryPercentage'] = data.battery;
-      context['estimatedRangeKm'] = data.range;
-      context['batteryHealth'] = data.batteryHealth;
-      context['healthScore'] = data.healthScore;
-      context['isCharging'] = data.isCharging;
+      context['batteryPercentage'] = data.batteryPercent;
+      context['estimatedRangeKm'] = data.rangeKm;
+      context['isCharging'] = data.chargingConnected;
     }
     return context;
   }

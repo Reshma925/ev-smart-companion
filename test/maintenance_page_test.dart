@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
 import 'package:flutter_application_2/screens/maintenance.dart';
 import 'package:flutter_application_2/services/firestore_service.dart';
+import 'package:flutter_application_2/services/vehicle_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -17,10 +18,18 @@ void main() {
         vin: 'TEST-VIN',
       );
       final firestore = FakeFirebaseFirestore();
+      VehicleBleClient.shared.snapshot.value = null;
+      addTearDown(() => VehicleBleClient.shared.snapshot.value = null);
       await firestore.collection('vehicles').doc(vehicle.id).set({
         ...vehicle.toMap(),
         'isActive': true,
       });
+      await firestore
+          .collection('vehicles')
+          .doc(vehicle.id)
+          .collection('telemetry')
+          .doc('live')
+          .set({'battery': 88, 'range': 300});
 
       await tester.pumpWidget(
         MaterialApp(
@@ -33,16 +42,29 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('EV Smart X1'), findsOneWidget);
-      await tester.scrollUntilVisible(find.text('No due dates recorded'), 400);
+      final scrollable = find.byType(Scrollable).first;
+      await tester.scrollUntilVisible(
+        find.text('Battery: N/A'),
+        400,
+        scrollable: scrollable,
+      );
+      expect(find.text('Battery: N/A'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('No due dates recorded'),
+        400,
+        scrollable: scrollable,
+      );
       expect(find.text('No due dates recorded'), findsOneWidget);
       await tester.scrollUntilVisible(
         find.text('No maintenance costs recorded yet.'),
         400,
+        scrollable: scrollable,
       );
       expect(find.text('No maintenance costs recorded yet.'), findsOneWidget);
       await tester.scrollUntilVisible(
         find.text('No service history yet'),
         400,
+        scrollable: scrollable,
       );
       await tester.pumpAndSettle();
       expect(find.text('No service history yet'), findsOneWidget);

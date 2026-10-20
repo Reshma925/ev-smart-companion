@@ -3,6 +3,8 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/foundation.dart'
     show debugPrint, debugPrintStack, kIsWeb;
 
+import 'vehicle_ble_client.dart';
+
 class AuthService {
   static Future<void>? _googleInitialization;
 
@@ -75,6 +77,7 @@ class AuthService {
   }
 
   Future<void> signOut() async {
+    await VehicleBleClient.shared.disconnect();
     await _auth.signOut();
     if (kIsWeb) return;
     final googleSignIn = GoogleSignIn.instance;

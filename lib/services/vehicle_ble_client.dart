@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
@@ -16,6 +17,12 @@ enum VehicleBlePhase {
   scanning,
   selectingDevice,
   connecting,
+  gattConnected,
+  discoveringServices,
+  discoveringCharacteristics,
+  subscribingNotifications,
+  awaitingTelemetry,
+  identityMismatch,
   connected,
   reconnecting,
   error,
@@ -23,9 +30,16 @@ enum VehicleBlePhase {
 }
 
 class VehicleBleClient extends ChangeNotifier {
-  VehicleBleClient({this.webAdapter});
+  VehicleBleClient({this.webAdapter, this.authenticationCheck});
+
+  static final VehicleBleClient shared = VehicleBleClient._applicationScoped();
+
+  VehicleBleClient._applicationScoped()
+    : webAdapter = null,
+      authenticationCheck = (() => FirebaseAuth.instance.currentUser != null);
 
   final VehicleBleWebAdapter? webAdapter;
+  final bool Function()? authenticationCheck;
   CentralManager? _manager;
   Peripheral? _peripheral;
   GATTCharacteristic? _stateCharacteristic;
@@ -46,6 +60,11 @@ class VehicleBleClient extends ChangeNotifier {
   int _lastSequence = -1;
   DateTime? _lastDataUpdate;
   String? _selectedDeviceName;
+  bool? _secureContext;
+  String? _bluetoothPolicyStatus;
+  String? _availabilityStatus;
+  String? _availabilityError;
+  bool _hasLoggedFirstTelemetry = false;
   int _messageId = 0;
   bool _disposed = false;
   bool _discoveryRunning = false;
@@ -71,11 +90,17 @@ class VehicleBleClient extends ChangeNotifier {
   VehicleBlePhase get phase => _phase;
   String? get error => _error;
   DateTime? get lastDataUpdate => _lastDataUpdate;
+  String? get vehicleId => _vehicleId.isEmpty ? null : _vehicleId;
   String? get selectedDeviceName => _isWebMode
       ? _resolvedWebAdapter?.selectedDeviceName
       : _selectedDeviceName;
+  bool? get secureContext => _secureContext;
+  String? get bluetoothPolicyStatus => _bluetoothPolicyStatus;
+  String? get availabilityStatus => _availabilityStatus;
+  String? get availabilityError => _availabilityError;
   bool get isConnected =>
       _phase == VehicleBlePhase.connected && snapshot.value != null;
+  bool get _isAuthenticated => authenticationCheck?.call() ?? true;
 
   bool get _isWebMode => kIsWeb || webAdapter != null;
 
@@ -88,11 +113,84 @@ class VehicleBleClient extends ChangeNotifier {
     return defaultTargetPlatform == TargetPlatform.android;
   }
 
+  Future<void> inspectWebCapabilities() async {
+    if (!_isWebMode || _disposed) return;
+    _resolvedWebAdapter ??=
+        webAdapter ?? web_adapter.createVehicleBleWebAdapter();
+    final adapter = _resolvedWebAdapter!;
+    _secureContext = adapter.isSecureContext;
+    _bluetoothPolicyStatus = adapter.bluetoothPolicyStatus;
+    _availabilityStatus = null;
+    _availabilityError = null;
+    notifyListeners();
+    if (!adapter.isSupported) {
+      _setPhase(
+        VehicleBlePhase.unsupported,
+        'Web Bluetooth is unavailable. Use desktop Chrome or Edge on a supported operating system.',
+      );
+      return;
+    }
+    if (!_secureContext!) {
+      _setPhase(
+        VehicleBlePhase.unsupported,
+        'Web Bluetooth requires HTTPS or localhost. Open the app from a secure page.',
+      );
+      return;
+    }
+    if (_bluetoothPolicyStatus == 'blocked') {
+      _setPhase(
+        VehicleBlePhase.unsupported,
+        'This page or its embedding frame blocks Bluetooth access. Open the app directly or allow Bluetooth in the permissions policy.',
+      );
+      return;
+    }
+    try {
+      _availabilityStatus = await adapter.getAvailabilityStatus();
+    } catch (error) {
+      _availabilityError = error.toString();
+      debugPrint('[Vehicle BLE Web] Availability check failed: $error');
+    }
+    if (_disposed) return;
+    if (_availabilityStatus == 'unavailable' &&
+        _phase == VehicleBlePhase.stopped) {
+      _setPhase(
+        VehicleBlePhase.error,
+        'Chrome reports that Bluetooth is unavailable. Turn on the laptop Bluetooth adapter and retry.',
+      );
+    } else {
+      notifyListeners();
+    }
+  }
+
   Future<void> start(String vehicleId) async {
-    _vehicleId = vehicleId.trim();
-    if (_vehicleId.isEmpty) {
+    if (!_isAuthenticated) {
+      throw StateError('Sign in before connecting to a vehicle.');
+    }
+    final requestedVehicleId = vehicleId.trim();
+    if (requestedVehicleId.isEmpty) {
       throw ArgumentError.value(vehicleId, 'vehicleId', 'Cannot be empty.');
     }
+    if (_connecting) {
+      if (_vehicleId != requestedVehicleId) {
+        throw StateError(
+          'Disconnect the current BLE attempt before selecting another vehicle.',
+        );
+      }
+      return;
+    }
+    if (_vehicleId == requestedVehicleId &&
+        (_phase == VehicleBlePhase.connected ||
+            _phase == VehicleBlePhase.awaitingTelemetry)) {
+      return;
+    }
+    if (_vehicleId.isNotEmpty && _vehicleId != requestedVehicleId) {
+      await disconnect();
+    }
+    _vehicleId = requestedVehicleId;
+    _lastDataUpdate = null;
+    _hasLoggedFirstTelemetry = false;
+    snapshot.value = null;
+    _logBleEvent('BLE_CONNECTION_REQUESTED');
     if (!isSupported) {
       _setPhase(
         VehicleBlePhase.unsupported,
@@ -101,6 +199,32 @@ class VehicleBleClient extends ChangeNotifier {
             : 'Bluetooth vehicle connection requires a physical Android device.',
       );
       return;
+    }
+    if (_isWebMode) {
+      final adapter = _resolvedWebAdapter!;
+      _secureContext = adapter.isSecureContext;
+      _bluetoothPolicyStatus = adapter.bluetoothPolicyStatus;
+      if (!_secureContext!) {
+        _setPhase(
+          VehicleBlePhase.unsupported,
+          'Web Bluetooth requires HTTPS or localhost. Open the app from a secure page and retry.',
+        );
+        return;
+      }
+      if (_bluetoothPolicyStatus == 'blocked') {
+        _setPhase(
+          VehicleBlePhase.unsupported,
+          'This page or its embedding frame blocks Bluetooth access. Open the app directly in Chrome or allow Bluetooth in the page permissions policy.',
+        );
+        return;
+      }
+      if (_availabilityStatus == 'unavailable') {
+        _setPhase(
+          VehicleBlePhase.error,
+          'Chrome reports that Bluetooth is unavailable. Turn on the laptop Bluetooth adapter and retry.',
+        );
+        return;
+      }
     }
 
     _reconnectTimer?.cancel();
@@ -136,12 +260,17 @@ class VehicleBleClient extends ChangeNotifier {
       }
     }
     snapshot.value = null;
+    _lastDataUpdate = null;
     _firstStatePacket = null;
     _setPhase(VehicleBlePhase.stopped, null);
   }
 
   Future<void> _startAttempt() async {
     if (_disposed) return;
+    if (!_isAuthenticated) {
+      _setPhase(VehicleBlePhase.stopped, null);
+      return;
+    }
     if (_isWebMode) {
       await _startWebAttempt();
       return;
@@ -170,6 +299,10 @@ class VehicleBleClient extends ChangeNotifier {
         );
         return;
       }
+      if (!_isAuthenticated) {
+        _setPhase(VehicleBlePhase.stopped, null);
+        return;
+      }
       if (_manager!.state != BluetoothLowEnergyState.poweredOn) {
         _setPhase(
           VehicleBlePhase.error,
@@ -186,6 +319,10 @@ class VehicleBleClient extends ChangeNotifier {
   Future<void> _startWebAttempt() async {
     final adapter = _resolvedWebAdapter!;
     if (_disposed || _connecting) return;
+    if (!_isAuthenticated) {
+      _setPhase(VehicleBlePhase.stopped, null);
+      return;
+    }
     _connecting = true;
     _setPhase(
       adapter.hasSelectedDevice
@@ -194,11 +331,40 @@ class VehicleBleClient extends ChangeNotifier {
       null,
     );
     try {
-      final connection = await adapter
-          .connect(
-            requestDevice: !adapter.hasSelectedDevice,
-            onConnecting: () => _setPhase(VehicleBlePhase.connecting, null),
+      if (!_isAuthenticated) {
+        _setPhase(VehicleBlePhase.stopped, null);
+        return;
+      }
+      final connection = await adapter.connect(
+        requestDevice: !adapter.hasSelectedDevice,
+        onConnecting: () => _setPhase(VehicleBlePhase.connecting, null),
+        onStage: (stage) {
+          _logBleEvent(
+            stage,
+            'peripheral=${adapter.selectedDeviceName ?? 'unknown'}',
           );
+          switch (stage) {
+            case 'DEVICE_SELECTED':
+            case 'GATT_CONNECT_STARTED':
+              _setPhase(VehicleBlePhase.connecting, null);
+            case 'GATT_CONNECTED':
+              _setPhase(VehicleBlePhase.gattConnected, null);
+            case 'GATT_SERVICE_DISCOVERY_STARTED':
+              _setPhase(VehicleBlePhase.discoveringServices, null);
+            case 'GATT_SERVICE_DISCOVERY_SUCCEEDED':
+              _setPhase(VehicleBlePhase.discoveringCharacteristics, null);
+            case 'GATT_CHARACTERISTIC_DISCOVERY_STARTED':
+              _setPhase(VehicleBlePhase.discoveringCharacteristics, null);
+            case 'GATT_CHARACTERISTIC_DISCOVERY_SUCCEEDED':
+              _setPhase(VehicleBlePhase.subscribingNotifications, null);
+          }
+        },
+      );
+      if (!_isAuthenticated) {
+        await connection.close();
+        _setPhase(VehicleBlePhase.stopped, null);
+        return;
+      }
       _webConnection = connection;
       _firstStatePacket = Completer<void>();
       _lastSequence = -1;
@@ -211,8 +377,22 @@ class VehicleBleClient extends ChangeNotifier {
         (_) => _onWebDisconnected(connection),
         onError: _onBleError,
       );
+      _logBleEvent(
+        'NOTIFICATION_SUBSCRIPTION_STARTED',
+        'characteristic=$vehicleStateCharacteristicUuid',
+      );
+      _setPhase(VehicleBlePhase.subscribingNotifications, null);
       await connection.startStateNotifications().timeout(_operationTimeout);
+      _logBleEvent(
+        'NOTIFICATION_SUBSCRIPTION_SUCCEEDED',
+        'characteristic=$vehicleStateCharacteristicUuid',
+      );
+      if (_phase == VehicleBlePhase.identityMismatch) return;
+      if (_phase != VehicleBlePhase.connected) {
+        _setPhase(VehicleBlePhase.awaitingTelemetry, null);
+      }
       await _firstStatePacket!.future.timeout(_operationTimeout);
+      if (_phase == VehicleBlePhase.identityMismatch) return;
       _reconnectAttempts = 0;
     } on TimeoutException catch (error) {
       final connection = _webConnection;
@@ -220,13 +400,22 @@ class VehicleBleClient extends ChangeNotifier {
       await _cancelWebSubscriptions();
       if (connection != null) await connection.close();
       _firstStatePacket = null;
-      _setPhase(
-        VehicleBlePhase.error,
-        'Bluetooth connection timed out. Check that the simulator is advertising and try again.',
-      );
+      if (_phase != VehicleBlePhase.identityMismatch) {
+        _setPhase(
+          VehicleBlePhase.error,
+          'No valid vehicle telemetry arrived within 15 seconds after notification subscription. Check the simulator vehicle ID and telemetry status, then retry.',
+        );
+      }
       debugPrint('[Vehicle BLE Web] Connection timed out: $error');
-      if (adapter.hasSelectedDevice) _scheduleReconnect();
+      if (adapter.hasSelectedDevice &&
+          _phase != VehicleBlePhase.identityMismatch) {
+        _scheduleReconnect();
+      }
     } catch (error) {
+      _logBleEvent(
+        'BLE_OPERATION_FAILED',
+        'stage=web-connection reason=$error',
+      );
       final connection = _webConnection;
       _webConnection = null;
       await _cancelWebSubscriptions();
@@ -242,20 +431,34 @@ class VehicleBleClient extends ChangeNotifier {
 
   String _webErrorMessage(Object error) {
     final message = error.toString();
+    if (message.contains('GATT_CHARACTERISTIC_DISCOVERY')) {
+      return 'The selected peripheral is missing the required vehicle GATT service or characteristic. Confirm the simulator is advertising the project protocol. Details: $message';
+    }
+    if (message.contains('GATT_SERVICE_DISCOVERY')) {
+      return 'The vehicle GATT service could not be discovered. Confirm the simulator registered service $vehicleControlServiceUuid. Details: $message';
+    }
+    if (message.contains('NOTIFICATION_SUBSCRIPTION')) {
+      return 'The state characteristic was found, but telemetry notifications could not be enabled. Details: $message';
+    }
     if (message.contains('NotFoundError') ||
         message.contains('cancelled') ||
         message.contains('canceled')) {
-      return 'No vehicle selected. Choose Connect Vehicle to open the Chrome device chooser.';
+      if (message.contains('DEVICE_REQUEST')) {
+        return 'Chrome did not select a matching device. Confirm the simulator is advertising EV-Simulator-01 and try again. Details: $message';
+      }
+      return 'The selected device could not be found. Confirm that it is advertising and retry. Details: $message';
     }
-    if (message.contains('SecurityError') ||
-        message.contains('NotAllowedError')) {
-      return 'Chrome blocked Bluetooth access. Use HTTPS or localhost and allow the selected device.';
+    if (message.contains('SecurityError')) {
+      return 'Chrome rejected this Bluetooth operation because of the page security context or permissions policy. Use HTTPS or localhost and open the app outside a restricted iframe. Details: $message';
+    }
+    if (message.contains('NotAllowedError')) {
+      return 'Chrome did not allow this Bluetooth request. Start it with the Connect Vehicle button and choose the simulator in Chrome’s chooser. Details: $message';
     }
     if (message.contains('NetworkError')) {
-      return 'Could not connect to the vehicle. Keep the simulator advertising and retry.';
+      return 'The Bluetooth operation failed at ${message.split(':').first}. Keep the simulator advertising and retry. Details: $message';
     }
     if (message.contains('NotFound')) {
-      return 'The selected device is missing the EV vehicle service or required characteristics.';
+      return 'The selected device or required GATT attribute was not found. Confirm the simulator is advertising the project protocol. Details: $message';
     }
     return 'Could not connect to the vehicle over Web Bluetooth: $message';
   }
@@ -267,6 +470,7 @@ class VehicleBleClient extends ChangeNotifier {
     unawaited(connection.close());
     if (_disposed) return;
     snapshot.value = null;
+    _lastDataUpdate = null;
     _firstStatePacket = null;
     if (_manualDisconnect) {
       _setPhase(VehicleBlePhase.stopped, null);
@@ -335,7 +539,14 @@ class VehicleBleClient extends ChangeNotifier {
     _setPhase(VehicleBlePhase.connecting, null);
     try {
       await _stopDiscovery();
-      await manager.connect(peripheral).timeout(_operationTimeout);
+      try {
+        await manager.connect(peripheral).timeout(_operationTimeout);
+      } catch (error) {
+        _logBleEvent('GATT_CONNECT_FAILED', 'reason=$error');
+        rethrow;
+      }
+      _logBleEvent('GATT_CONNECTED', 'peripheral=$_selectedDeviceName');
+      _setPhase(VehicleBlePhase.gattConnected, null);
       try {
         await manager
             .requestMTU(peripheral, mtu: 247)
@@ -343,9 +554,16 @@ class VehicleBleClient extends ChangeNotifier {
       } catch (error) {
         debugPrint('[Vehicle BLE] Continuing with default MTU: $error');
       }
-      final services = await manager
-          .discoverGATT(peripheral)
-          .timeout(_operationTimeout);
+      _setPhase(VehicleBlePhase.discoveringServices, null);
+      _logBleEvent('GATT_SERVICE_DISCOVERY_STARTED');
+      late final List<GATTService> services;
+      try {
+        services = await manager
+            .discoverGATT(peripheral)
+            .timeout(_operationTimeout);
+      } catch (error) {
+        throw StateError('GATT_SERVICE_DISCOVERY: $error');
+      }
       final service = services
           .where(
             (candidate) =>
@@ -354,8 +572,17 @@ class VehicleBleClient extends ChangeNotifier {
           )
           .firstOrNull;
       if (service == null) {
-        throw StateError('The simulator does not expose the vehicle service.');
+        _logBleEvent('GATT_SERVICE_DISCOVERY_FAILED');
+        throw StateError(
+          'GATT_SERVICE_DISCOVERY: The simulator does not expose the vehicle service.',
+        );
       }
+      _logBleEvent(
+        'GATT_SERVICE_DISCOVERY_SUCCEEDED',
+        'service=$vehicleControlServiceUuid',
+      );
+      _setPhase(VehicleBlePhase.discoveringCharacteristics, null);
+      _logBleEvent('GATT_CHARACTERISTIC_DISCOVERY_STARTED');
       _stateCharacteristic = service.characteristics
           .where(
             (characteristic) =>
@@ -371,30 +598,42 @@ class VehicleBleClient extends ChangeNotifier {
           )
           .firstOrNull;
       if (_stateCharacteristic == null || _commandCharacteristic == null) {
+        _logBleEvent('GATT_CHARACTERISTIC_DISCOVERY_FAILED');
         throw StateError(
-          'The simulator is missing a required BLE characteristic.',
+          'GATT_CHARACTERISTIC_DISCOVERY: The simulator is missing a required BLE characteristic.',
         );
       }
+      _logBleEvent('GATT_CHARACTERISTIC_DISCOVERY_SUCCEEDED');
       _firstStatePacket = Completer<void>();
-      await manager
-          .setCharacteristicNotifyState(
-            peripheral,
-            _stateCharacteristic!,
-            state: true,
-          )
-          .timeout(_operationTimeout);
+      _setPhase(VehicleBlePhase.subscribingNotifications, null);
+      _logBleEvent('NOTIFICATION_SUBSCRIPTION_STARTED');
+      try {
+        await manager
+            .setCharacteristicNotifyState(
+              peripheral,
+              _stateCharacteristic!,
+              state: true,
+            )
+            .timeout(_operationTimeout);
+      } catch (error) {
+        throw StateError('NOTIFICATION_SUBSCRIPTION: $error');
+      }
+      _logBleEvent('NOTIFICATION_SUBSCRIPTION_SUCCEEDED');
+      if (_phase == VehicleBlePhase.identityMismatch) return;
+      if (_phase != VehicleBlePhase.connected) {
+        _setPhase(VehicleBlePhase.awaitingTelemetry, null);
+      }
       _lastSequence = -1;
       _stateAssembler.reset();
       await _firstStatePacket!.future.timeout(_operationTimeout);
+      if (_phase == VehicleBlePhase.identityMismatch) return;
       _reconnectAttempts = 0;
     } catch (error) {
       _firstStatePacket = null;
+      _logBleEvent('BLE_OPERATION_FAILED', 'reason=$error');
       await _disconnectPeripheral(peripheral);
       _connecting = false;
-      _setPhase(
-        VehicleBlePhase.error,
-        'Could not connect to the vehicle simulator. Check that it is advertising and retry.',
-      );
+      _setPhase(VehicleBlePhase.error, _connectionErrorMessage(error));
       debugPrint('[Vehicle BLE] Connection failed: $error');
       _scheduleReconnect();
     }
@@ -409,6 +648,8 @@ class VehicleBleClient extends ChangeNotifier {
       _connecting = false;
       if (!_disposed) {
         snapshot.value = null;
+        _lastDataUpdate = null;
+        if (_phase == VehicleBlePhase.identityMismatch) return;
         if (_manualDisconnect) {
           _setPhase(VehicleBlePhase.stopped, null);
           return;
@@ -429,31 +670,105 @@ class VehicleBleClient extends ChangeNotifier {
   }
 
   void _onStateBytes(List<int> value) {
+    Uint8List? bytes;
     try {
-      final bytes = _stateAssembler.add(value);
+      bytes = _stateAssembler.add(value);
       if (bytes == null) return;
-      final decoded = VehicleStateSnapshot.decode(utf8.decode(bytes));
-      if (decoded.vehicleId != _vehicleId) {
-        _setPhase(
-          VehicleBlePhase.error,
-          'The connected simulator is configured for a different vehicle.',
-        );
-        return;
-      }
-      if (decoded.sequence <= _lastSequence) return;
-      _lastSequence = decoded.sequence;
-      _lastDataUpdate = DateTime.now();
-      snapshot.value = decoded;
-      _setPhase(VehicleBlePhase.connected, null);
-      if (!(_firstStatePacket?.isCompleted ?? true)) {
-        _firstStatePacket!.complete();
-      }
     } catch (error) {
-      debugPrint('[Vehicle BLE] Ignored invalid state packet: $error');
+      _logBleEvent('TELEMETRY_FRAME_REJECTED', 'reason=$error');
+      return;
+    }
+    late final VehicleStateSnapshot decoded;
+    try {
+      decoded = VehicleStateSnapshot.decode(utf8.decode(bytes));
+    } catch (error) {
+      _logBleEvent('TELEMETRY_PAYLOAD_REJECTED', 'reason=$error');
+      return;
+    }
+    _logBleEvent(
+      'SIMULATOR_IDENTITY_RECEIVED',
+      'reportedVehicleDocumentId=${decoded.vehicleId}',
+    );
+    if (decoded.vehicleId != _vehicleId) {
+      final message =
+          'Vehicle identity mismatch: selected vehicle document ID "$_vehicleId", but simulator reports "${decoded.vehicleId}". Enter the selected vehicle document ID in the simulator and restart advertising.';
+      _logBleEvent(
+        'VEHICLE_IDENTITY_MISMATCH',
+        'selectedVehicleDocumentId=$_vehicleId reportedVehicleDocumentId=${decoded.vehicleId}',
+      );
+      _manualDisconnect = true;
+      snapshot.value = null;
+      _lastDataUpdate = null;
+      _setPhase(VehicleBlePhase.identityMismatch, message);
+      final firstPacket = _firstStatePacket;
+      if (firstPacket != null && !firstPacket.isCompleted) {
+        firstPacket.complete();
+      }
+      if (_isWebMode) {
+        final connection = _webConnection;
+        _webConnection = null;
+        unawaited(_cancelWebSubscriptions());
+        if (connection != null) unawaited(connection.close());
+      } else {
+        final peripheral = _peripheral;
+        if (peripheral != null) unawaited(_disconnectPeripheral(peripheral));
+      }
+      return;
+    }
+    if (decoded.sequence <= _lastSequence) {
+      _logBleEvent(
+        'STALE_TELEMETRY_IGNORED',
+        'sequence=${decoded.sequence} lastSequence=$_lastSequence',
+      );
+      return;
+    }
+    _lastSequence = decoded.sequence;
+    _lastDataUpdate = DateTime.now();
+    snapshot.value = decoded;
+    final event = _hasLoggedFirstTelemetry
+        ? 'VALID_TELEMETRY_RECEIVED'
+        : 'FIRST_VALID_TELEMETRY_RECEIVED';
+    _hasLoggedFirstTelemetry = true;
+    _logBleEvent(
+      event,
+      'vehicleDocumentId=${decoded.vehicleId} sequence=${decoded.sequence} '
+      'timestamp=${DateTime.now().toIso8601String()}',
+    );
+    _setPhase(VehicleBlePhase.connected, null);
+    if (!(_firstStatePacket?.isCompleted ?? true)) {
+      _firstStatePacket!.complete();
     }
   }
 
+  void _logBleEvent(String event, [String details = '']) {
+    final suffix = details.isEmpty ? '' : ' $details';
+    debugPrint(
+      '[Vehicle BLE] ${DateTime.now().toIso8601String()} $event '
+      'selectedVehicleDocumentId=$_vehicleId$suffix',
+    );
+  }
+
+  String _connectionErrorMessage(Object error) {
+    final message = error.toString();
+    if (message.contains('GATT_SERVICE_DISCOVERY')) {
+      return 'The vehicle GATT service could not be discovered. Details: $message';
+    }
+    if (message.contains('GATT_CHARACTERISTIC_DISCOVERY')) {
+      return 'A required vehicle characteristic could not be discovered. Details: $message';
+    }
+    if (message.contains('NOTIFICATION_SUBSCRIPTION')) {
+      return 'The state characteristic was found, but telemetry notifications could not be enabled. Details: $message';
+    }
+    if (error is TimeoutException) {
+      return 'No valid vehicle telemetry arrived within 15 seconds after notification subscription.';
+    }
+    return 'Could not connect to the vehicle simulator. Check that it is advertising and retry. Details: $message';
+  }
+
   Future<void> send(VehicleControlCommand command) async {
+    if (!_isAuthenticated) {
+      throw StateError('Sign in before sending vehicle commands.');
+    }
     if (_isWebMode) {
       await _sendWeb(command);
       return;

@@ -1,24 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../app_theme.dart';
 import '../data/learning_catalog.dart';
 import '../models/learning_lesson.dart';
 import '../models/vehicle.dart';
-import '../models/vehicle_telemetry.dart';
 import '../services/distance_unit_service.dart';
 import '../services/learning_assistant_service.dart';
+import '../widgets/vehicle_ble_state_view.dart';
 
 class LearnScreen extends StatefulWidget {
   const LearnScreen({
     super.key,
     required this.vehicleStream,
-    required this.telemetryStreamFor,
     this.assistant,
     this.distanceUnit = DistanceUnitService.km,
   });
 
   final Stream<Vehicle?> vehicleStream;
-  final Stream<VehicleData?> Function(String vehicleId) telemetryStreamFor;
   final EvLearningAssistant? assistant;
   final String distanceUnit;
 
@@ -109,27 +108,19 @@ class _LearnScreenState extends State<LearnScreen> {
         stream: widget.vehicleStream,
         builder: (context, vehicleSnapshot) {
           final vehicle = vehicleSnapshot.data;
-          if (vehicle == null) {
-            return _buildContent(
-              vehicle: null,
-              telemetry: null,
-              vehicleUnavailable:
-                  vehicleSnapshot.hasError ||
-                  vehicleSnapshot.connectionState != ConnectionState.waiting,
-              telemetryUnavailable: false,
-            );
-          }
-          return StreamBuilder<VehicleData?>(
-            key: ValueKey(vehicle.id),
-            stream: widget.telemetryStreamFor(vehicle.id),
-            builder: (context, telemetrySnapshot) => _buildContent(
-              vehicle: vehicle,
-              telemetry: telemetrySnapshot.data,
-              vehicleUnavailable: false,
-              telemetryUnavailable:
-                  telemetrySnapshot.hasError ||
-                  telemetrySnapshot.connectionState != ConnectionState.waiting,
-            ),
+          return VehicleBleStateView(
+            builder: (context, client, snapshot) {
+              final matchingSnapshot = snapshot?.vehicleId == vehicle?.id
+                  ? snapshot
+                  : null;
+              return _buildContent(
+                vehicle: vehicle,
+                state: matchingSnapshot?.state,
+                vehicleUnavailable:
+                    vehicleSnapshot.hasError ||
+                    vehicleSnapshot.connectionState != ConnectionState.waiting,
+              );
+            },
           );
         },
       ),
@@ -138,9 +129,8 @@ class _LearnScreenState extends State<LearnScreen> {
 
   Widget _buildContent({
     required Vehicle? vehicle,
-    required VehicleData? telemetry,
+    required VehicleControlState? state,
     required bool vehicleUnavailable,
-    required bool telemetryUnavailable,
   }) {
     final content = ListView(
       padding: const EdgeInsets.fromLTRB(18, 14, 18, 28),
@@ -170,17 +160,17 @@ class _LearnScreenState extends State<LearnScreen> {
         ),
         const SizedBox(height: 20),
         _assistantCard(
-          LearningVehicleContext(vehicle: vehicle, telemetry: telemetry),
+          LearningVehicleContext(vehicle: vehicle, telemetry: state),
         ),
-        if (vehicle != null && telemetry != null) ...[
+        if (vehicle != null && state != null) ...[
           const SizedBox(height: 14),
-          _vehicleSnapshot(vehicle, telemetry),
-        ] else if (vehicleUnavailable || telemetryUnavailable) ...[
+          _vehicleSnapshot(vehicle, state),
+        ] else ...[
           const SizedBox(height: 12),
           _contextNotice(
             vehicle == null
                 ? 'Current vehicle information is unavailable. You can still explore lessons and ask general EV questions.'
-                : 'Live vehicle telemetry is unavailable. You can still explore lessons and ask general EV questions.',
+                : 'Live simulator telemetry is unavailable. Connect from Vehicle Controls to see current measurements. You can still explore lessons and ask general EV questions.',
           ),
         ],
         const SizedBox(height: 24),
@@ -387,9 +377,9 @@ class _LearnScreenState extends State<LearnScreen> {
     );
   }
 
-  Widget _vehicleSnapshot(Vehicle vehicle, VehicleData telemetry) {
+  Widget _vehicleSnapshot(Vehicle vehicle, VehicleControlState state) {
     final range = DistanceUnitService.format(
-      telemetry.range,
+      state.rangeKm,
       widget.distanceUnit,
       decimals: 0,
     );
@@ -415,7 +405,7 @@ class _LearnScreenState extends State<LearnScreen> {
               ),
             ),
             Text(
-              '${telemetry.battery.toStringAsFixed(0)}% · $range estimated',
+              '${state.batteryPercent.toStringAsFixed(0)}% · $range estimated',
               textAlign: TextAlign.end,
               style: const TextStyle(color: AppTheme.mutedBlue, fontSize: 12),
             ),

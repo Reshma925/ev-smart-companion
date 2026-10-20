@@ -3,22 +3,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../app_theme.dart';
 import '../models/charging_station.dart';
 import '../models/road_route.dart';
 import '../models/trip_plan.dart';
 import '../models/vehicle.dart';
-import '../models/vehicle_telemetry.dart';
 import '../services/charging_station_service.dart';
 import '../services/distance_unit_service.dart';
-import '../services/ev_range_service.dart';
 import '../services/firestore_service.dart';
 import '../services/location_service.dart';
 import '../services/road_directions_service.dart';
 import '../services/trip_feasibility_service.dart';
 import '../services/trip_planning_service.dart';
 import '../widgets/destination_autocomplete_field.dart';
+import '../widgets/vehicle_ble_state_view.dart';
 
 class TripPlannerPage extends StatefulWidget {
   const TripPlannerPage({
@@ -57,6 +57,7 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
   String? _locationError;
   String? _observedVehicleId;
   double? _observedBattery;
+  double? _observedRange;
   bool _locating = false;
   bool _planning = false;
   int _requestGeneration = 0;
@@ -100,14 +101,14 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
 
   Future<void> _planTrip({
     required Vehicle vehicle,
-    required VehicleData? telemetry,
+    required VehicleControlState? state,
   }) async {
     final selectedDestination = _selectedDestination;
     final destinationQuery =
         selectedDestination?.displayLabel ?? _destinationQuery.trim();
     final start = _start;
-    final maximumRangeKm = vehicle.maximumRangeKm;
-    final battery = telemetry?.battery;
+    final battery = state?.batteryPercent;
+    final currentRangeKm = state?.rangeKm;
     if (start == null) {
       setState(() => _errorMessage = 'Detect your current location first.');
       return;
@@ -116,19 +117,20 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
       setState(() => _errorMessage = 'Enter a destination to plan your trip.');
       return;
     }
-    if (maximumRangeKm == null ||
-        !maximumRangeKm.isFinite ||
-        maximumRangeKm <= 0 ||
+    if (currentRangeKm == null ||
+        !currentRangeKm.isFinite ||
+        currentRangeKm <= 0 ||
         battery == null ||
         !battery.isFinite ||
-        battery < 0 ||
+        battery <= 0 ||
         battery > 100) {
       setState(() {
         _errorMessage =
-            'A valid vehicle maximum range and live battery reading are required.';
+            'Connect to the simulator and provide valid live battery and range readings.';
       });
       return;
     }
+    final maximumRangeKm = currentRangeKm * 100 / battery;
 
     final generation = ++_requestGeneration;
     setState(() {
@@ -271,26 +273,16 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
                 );
               }
               _observeVehicle(vehicle);
-              return StreamBuilder<VehicleData?>(
-                key: ValueKey(vehicle.id),
-                stream: _firestore.watchVehicleTelemetry(vehicle.id),
-                builder: (context, telemetrySnapshot) {
-                  if (telemetrySnapshot.hasError) {
-                    return const Center(
-                      child: Text('Could not load live battery telemetry.'),
-                    );
-                  }
-                  return _buildPlanner(
-                    uid: uid,
-                    vehicles: vehicles,
-                    vehicle: vehicle,
-                    telemetry: telemetrySnapshot.data,
-                    telemetryLoading:
-                        telemetrySnapshot.connectionState !=
-                            ConnectionState.active &&
-                        !telemetrySnapshot.hasData,
-                  );
-                },
+              return VehicleBleStateView(
+                builder: (context, client, snapshot) => _buildPlanner(
+                  uid: uid,
+                  vehicles: vehicles,
+                  vehicle: vehicle,
+                  state: snapshot?.vehicleId == vehicle.id
+                      ? snapshot?.state
+                      : null,
+                  telemetryLoading: false,
+                ),
               );
             },
           );
@@ -304,6 +296,8 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
     if (previousId == vehicle.id) return;
     _observedVehicleId = vehicle.id;
     if (previousId != null) {
+      _observedBattery = null;
+      _observedRange = null;
       _requestGeneration++;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -317,18 +311,20 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
     }
   }
 
-  void _observeBattery(String vehicleId, double? battery) {
+  void _observeTelemetry(String vehicleId, VehicleControlState? state) {
     if (_observedVehicleId != vehicleId) {
-      _observedBattery = battery;
+      _observedBattery = state?.batteryPercent;
+      _observedRange = state?.rangeKm;
       return;
     }
     final previousBattery = _observedBattery;
+    final previousRange = _observedRange;
+    final battery = state?.batteryPercent;
+    final range = state?.rangeKm;
     _observedBattery = battery;
-    if (previousBattery == battery ||
-        previousBattery == null ||
-        battery == null) {
-      return;
-    }
+    _observedRange = range;
+    if (previousBattery == battery && previousRange == range) return;
+    if (_result == null && !_planning) return;
     _requestGeneration++;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -336,7 +332,9 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
         _result = null;
         _errorMessage = null;
         _planning = false;
-        _locationMessage = 'Battery telemetry changed. Plan the trip again.';
+        _locationMessage = state == null
+            ? 'Live simulator telemetry was disconnected. Reconnect and plan the trip again.'
+            : 'Live simulator range or battery changed. Plan the trip again.';
       });
     });
   }
@@ -345,25 +343,12 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
     required String uid,
     required List<Vehicle> vehicles,
     required Vehicle vehicle,
-    required VehicleData? telemetry,
+    required VehicleControlState? state,
     required bool telemetryLoading,
   }) {
-    _observeBattery(vehicle.id, telemetry?.battery);
-    final maximumRangeKm = vehicle.maximumRangeKm;
-    final battery = telemetry?.battery;
-    final availableRange =
-        maximumRangeKm == null ||
-            battery == null ||
-            !maximumRangeKm.isFinite ||
-            maximumRangeKm <= 0 ||
-            !battery.isFinite ||
-            battery < 0 ||
-            battery > 100
-        ? null
-        : EvRangeService.calculateCurrentRangeKm(
-            maximumRangeKm: maximumRangeKm,
-            batteryPercentage: battery,
-          );
+    _observeTelemetry(vehicle.id, state);
+    final battery = state?.batteryPercent;
+    final availableRange = state?.rangeKm;
     return ListView(
       padding: const EdgeInsets.all(18),
       children: [
@@ -413,10 +398,8 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
         _locationPicker(),
         const SizedBox(height: 12),
         DestinationAutocompleteField(
-          searchPlaces: (query) => _directions.searchPlaces(
-            query,
-            proximity: _start,
-          ),
+          searchPlaces: (query) =>
+              _directions.searchPlaces(query, proximity: _start),
           onQueryChanged: _destinationChanged,
           onPlaceSelected: _destinationSelected,
         ),
@@ -448,7 +431,7 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
         FilledButton.icon(
           onPressed: _planning || telemetryLoading
               ? null
-              : () => _planTrip(vehicle: vehicle, telemetry: telemetry),
+              : () => _planTrip(vehicle: vehicle, state: state),
           icon: _planning
               ? const SizedBox(
                   width: 18,

@@ -176,8 +176,10 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
         ),
       );
       debugPrint(
-        '[Vehicle Simulator BLE] Android advertising start callback succeeded for '
-        '$vehicleSimulatorAdvertisedName on service $vehicleControlServiceUuid.',
+        '[Vehicle Simulator BLE] ${DateTime.now().toIso8601String()} '
+        'SIMULATOR_ADVERTISING_SUCCEEDED vehicleDocumentId=$_vehicleId '
+        'peripheral=$vehicleSimulatorAdvertisedName '
+        'service=$vehicleControlServiceUuid.',
       );
       _advertising = true;
       _error = null;
@@ -409,11 +411,20 @@ class VehicleSimulatorPeripheral extends ChangeNotifier {
     final key = event.central.uuid.toString();
     if (event.state) {
       _subscribers[key] = event.central;
+      debugPrint(
+        '[Vehicle Simulator BLE] ${DateTime.now().toIso8601String()} '
+        'TELEMETRY_SUBSCRIPTION_ENABLED vehicleDocumentId=$_vehicleId '
+        'characteristic=$vehicleStateCharacteristicUuid',
+      );
       unawaited(_notifyCurrentState(event.central));
       _recordEvent('EV Smart Companion connected');
       _setStatus('EV Smart Companion connected');
     } else {
       _subscribers.remove(key);
+      debugPrint(
+        '[Vehicle Simulator BLE] ${DateTime.now().toIso8601String()} '
+        'TELEMETRY_SUBSCRIPTION_DISABLED vehicleDocumentId=$_vehicleId',
+      );
       _recordEvent('EV Smart Companion disconnected');
       _setStatus('Connected app paused state updates');
     }

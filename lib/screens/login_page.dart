@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import '../app_theme.dart';
 import '../services/auth_service.dart';
-import '../services/firestore_service.dart';
 import '../widgets/common_widgets.dart';
-import 'bluetooth_scanning_page.dart';
 import 'forgot_password_page.dart';
 import 'signup_page.dart';
 
+typedef EmailLoginAction = Future<void> Function(String email, String password);
+
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({super.key, this.emailLoginAction, this.errorMessageBuilder});
+
+  final EmailLoginAction? emailLoginAction;
+  final String Function(Object error)? errorMessageBuilder;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -19,7 +22,6 @@ class _LoginPageState extends State<LoginPage> {
   final identityController = TextEditingController();
   final passwordController = TextEditingController();
   late final authService = AuthService();
-  late final firestoreService = FirestoreService();
   bool isLoading = false;
 
   @override
@@ -34,47 +36,24 @@ class _LoginPageState extends State<LoginPage> {
     if (!formKey.currentState!.validate()) return;
     setState(() => isLoading = true);
     try {
-      final credential = await authService.signInWithEmail(
-        email: identityController.text,
-        password: passwordController.text,
-      );
-      final user = credential.user;
-      if (user == null) throw StateError('Firebase returned no user.');
-      final profile = await firestoreService.getUserProfile(user.uid);
-      if (!mounted) return;
-      if (profile == null) {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(
-            builder: (_) => const SignUpPage(authenticatedOnboarding: true),
-          ),
-          (route) => false,
+      final action = widget.emailLoginAction;
+      if (action != null) {
+        await action(identityController.text, passwordController.text);
+      } else {
+        final credential = await authService.signInWithEmail(
+          email: identityController.text,
+          password: passwordController.text,
         );
-        return;
+        if (credential.user == null) {
+          throw StateError('Firebase returned no user.');
+        }
       }
-      if (profile.vehicleId == null || profile.vehicleId!.isEmpty) {
-        throw StateError(
-          'Your Firestore profile has no vehicle mapping. Contact support.',
-        );
-      }
-      final vehicle = await firestoreService.getCurrentUserVehicle(user.uid);
-      if (!mounted) return;
-      if (vehicle == null) {
-        throw StateError(
-          'Your registered vehicle is unavailable. Contact support to restore access.',
-        );
-      }
-      final destination = BluetoothScanningPage(vehicle: vehicle);
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => destination),
-        (route) => false,
-      );
     } catch (error) {
       if (mounted) {
         await showErrorDialog(
           context,
-          authService.messageFor(error),
+          widget.errorMessageBuilder?.call(error) ??
+              authService.messageFor(error),
           title: 'Login failed',
         );
       }
@@ -88,43 +67,13 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => isLoading = true);
     try {
       final credential = await authService.signInWithGoogle();
-      final user = credential?.user;
-      if (user == null) return;
-      final profile = await firestoreService.getUserProfile(user.uid);
-      if (!mounted) return;
-      if (profile == null) {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(
-            builder: (_) => const SignUpPage(authenticatedOnboarding: true),
-          ),
-          (route) => false,
-        );
-        return;
-      }
-      if (profile.vehicleId == null || profile.vehicleId!.isEmpty) {
-        throw StateError(
-          'Your Firestore profile has no vehicle mapping. Contact support.',
-        );
-      }
-      final vehicle = await firestoreService.getCurrentUserVehicle(user.uid);
-      if (!mounted) return;
-      if (vehicle == null) {
-        throw StateError(
-          'Your registered vehicle is unavailable. Contact support to restore access.',
-        );
-      }
-      final destination = BluetoothScanningPage(vehicle: vehicle);
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => destination),
-        (route) => false,
-      );
+      if (credential?.user == null) return;
     } catch (error) {
       if (mounted) {
         await showErrorDialog(
           context,
-          '${authService.messageFor(error)}\n\nDetails: $error',
+          widget.errorMessageBuilder?.call(error) ??
+              '${authService.messageFor(error)}\n\nDetails: $error',
           title: 'Google sign-in failed',
         );
       }

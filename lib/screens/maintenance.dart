@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../app_theme.dart';
 import '../models/vehicle.dart';
@@ -8,6 +9,7 @@ import '../models/vehicle_health.dart';
 import '../models/vehicle_telemetry.dart';
 import '../services/firestore_service.dart';
 import '../services/maintenance_schedule_service.dart';
+import '../widgets/vehicle_ble_state_view.dart';
 
 class MaintenancePage extends StatefulWidget {
   const MaintenancePage({
@@ -36,8 +38,6 @@ class _MaintenancePageState extends State<MaintenancePage> {
       widget.firestoreService ?? FirestoreService();
   late final Stream<List<VehicleMaintenanceRecord>> _recordsStream = _firestore
       .watchVehicleMaintenanceRecords(widget.vehicle.id);
-  late final Stream<VehicleData?> _telemetryStream = _firestore
-      .watchVehicleTelemetry(widget.vehicle.id);
   late final Stream<Vehicle?> _vehicleStream = _firestore.watchVehicleById(
     widget.vehicle.id,
   );
@@ -341,10 +341,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
             final message = kDebugMode
                 ? 'Maintenance read failed: ${_maintenanceReadError(error)}'
                 : 'Maintenance records could not be loaded from Firebase.';
-            return _LoadError(
-              message: message,
-              onRetry: () => setState(() {}),
-            );
+            return _LoadError(message: message, onRetry: () => setState(() {}));
           }
           if (recordSnapshot.connectionState == ConnectionState.waiting &&
               !recordSnapshot.hasData) {
@@ -353,36 +350,32 @@ class _MaintenancePageState extends State<MaintenancePage> {
           final records = recordSnapshot.data ?? const [];
           return StreamBuilder<Vehicle?>(
             stream: _vehicleStream,
-            builder: (context, vehicleSnapshot) => StreamBuilder<VehicleData?>(
-              stream: _telemetryStream,
-              builder: (context, telemetrySnapshot) {
+            builder: (context, vehicleSnapshot) => VehicleBleStateView(
+              builder: (context, client, snapshot) {
                 final vehicle = vehicleSnapshot.data ?? widget.vehicle;
-                final telemetry = telemetrySnapshot.data;
+                final matchingSnapshot = snapshot?.vehicleId == vehicle.id
+                    ? snapshot
+                    : null;
+                const VehicleData? telemetry = null;
                 return ListView(
                   padding: const EdgeInsets.fromLTRB(18, 14, 18, 100),
                   children: [
-                    _VehicleHeader(
-                      vehicle: vehicle,
-                      odometerKm: telemetry?.odometerKm,
-                    ),
+                    _VehicleHeader(vehicle: vehicle, odometerKm: null),
+                    const SizedBox(height: 14),
+                    _LiveTelemetrySummary(snapshot: matchingSnapshot),
                     const SizedBox(height: 14),
                     _MaintenanceOverview(records: records),
                     const SizedBox(height: 22),
                     _SectionHeading(
                       title: 'Attention needed',
-                      subtitle: telemetrySnapshot.hasError
-                          ? 'Vehicle signals could not be read.'
-                          : telemetry == null
-                          ? 'No live vehicle signals are currently reported.'
-                          : 'Rule-based checks from reported vehicle data.',
+                      subtitle: telemetry == null
+                          ? 'Only simulator measurements are used. Unsupported diagnostics remain unavailable.'
+                          : 'Rule-based checks from simulator measurements.',
                     ),
                     const SizedBox(height: 10),
                     _SignalAlerts(telemetry: telemetry),
                     const SizedBox(height: 22),
-                    _CostSummary(
-                      records: records,
-                      odometerKm: telemetry?.odometerKm,
-                    ),
+                    _CostSummary(records: records, odometerKm: null),
                     const SizedBox(height: 22),
                     _SectionHeading(
                       title: 'Service history',
@@ -428,6 +421,63 @@ String _maintenanceReadError(Object? error) {
     return '${error.code}: ${error.message ?? '(no message)'}';
   }
   return error == null ? 'Unknown error' : error.runtimeType.toString();
+}
+
+class _LiveTelemetrySummary extends StatelessWidget {
+  const _LiveTelemetrySummary({required this.snapshot});
+
+  final VehicleStateSnapshot? snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = snapshot?.state;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'LIVE SIMULATOR DATA',
+              style: TextStyle(
+                color: AppTheme.mutedBlue,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 18,
+              runSpacing: 10,
+              children: [
+                Text(
+                  'Battery: ${state == null ? 'N/A' : '${state.batteryPercent.round()}%'}',
+                ),
+                Text(
+                  'Range: ${state == null ? 'N/A' : '${state.rangeKm.round()} km'}',
+                ),
+                Text(
+                  'Speed: ${state == null ? 'N/A' : '${state.speedKph.round()} km/h'}',
+                ),
+                const Text('Battery health: N/A'),
+                const Text('Odometer: N/A'),
+                const Text('Tire condition: N/A'),
+              ],
+            ),
+            if (state == null)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Connect to the simulator for live measurements. Unsupported diagnostics are not inferred.',
+                  style: TextStyle(color: AppTheme.mutedBlue, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _MaintenanceOverview extends StatelessWidget {
