@@ -1316,8 +1316,12 @@ class _ClimatePanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final climateOn = state?.climateOn ?? false;
-    final temperature = pendingTemperature ?? state?.targetTemperatureC ?? 21;
-    final fanLevel = state?.fanLevel ?? 1;
+    // The fallbacks only position disabled widgets; labels show '—' instead.
+    final liveTemperature = pendingTemperature ?? state?.targetTemperatureC;
+    final temperature = liveTemperature ?? 21;
+    final temperatureLabel = liveTemperature == null
+        ? '—'
+        : '${liveTemperature.round()} °C';
     return _Panel(
       title: 'Climate',
       subtitle: enabled
@@ -1334,7 +1338,7 @@ class _ClimatePanel extends StatelessWidget {
           Row(
             children: [
               const Expanded(child: Text('Target temperature')),
-              Text('${temperature.round()} °C'),
+              Text(temperatureLabel),
             ],
           ),
           Slider(
@@ -1342,7 +1346,7 @@ class _ClimatePanel extends StatelessWidget {
             min: 16,
             max: 30,
             divisions: 14,
-            label: '${temperature.round()} °C',
+            label: temperatureLabel,
             onChanged: enabled ? onTemperatureChanged : null,
             onChangeEnd: enabled ? onTemperatureChangeEnd : null,
           ),
@@ -1350,7 +1354,8 @@ class _ClimatePanel extends StatelessWidget {
             children: [
               const Expanded(child: Text('Fan speed')),
               DropdownButton<int>(
-                value: fanLevel.clamp(0, 5).toInt(),
+                value: state?.fanLevel.clamp(0, 5).toInt(),
+                hint: const Text('—'),
                 items: [
                   for (var level = 0; level <= 5; level++)
                     DropdownMenuItem(value: level, child: Text('$level')),
@@ -1391,7 +1396,9 @@ class _ChargingPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final connected = state?.chargingConnected ?? false;
+    // The fallback only positions the disabled slider; the label shows '—'.
     final target = state?.targetChargePercent ?? 80;
+    final targetLabel = state == null ? '—' : '$target%';
     return _Panel(
       title: 'Charging',
       subtitle: 'Charging state reported by the connected simulator',
@@ -1401,8 +1408,10 @@ class _ChargingPanel extends StatelessWidget {
             contentPadding: EdgeInsets.zero,
             title: const Text('Charger connected'),
             subtitle: Text(
-              connected
-                  ? '${state?.chargingPowerKw.toStringAsFixed(1) ?? '0.0'} kW'
+              state == null
+                  ? '—'
+                  : connected
+                  ? '${state!.chargingPowerKw.toStringAsFixed(1)} kW'
                   : 'Not charging',
             ),
             value: connected,
@@ -1411,7 +1420,7 @@ class _ChargingPanel extends StatelessWidget {
           Row(
             children: [
               const Expanded(child: Text('Charge target')),
-              Text('$target%'),
+              Text(targetLabel),
             ],
           ),
           Slider(
@@ -1419,7 +1428,7 @@ class _ChargingPanel extends StatelessWidget {
             min: 50,
             max: 100,
             divisions: 10,
-            label: '$target%',
+            label: targetLabel,
             onChanged: enabled && state != null
                 ? (value) => onTargetChanged(value.round())
                 : null,
