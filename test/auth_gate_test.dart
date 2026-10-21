@@ -81,6 +81,44 @@ void main() {
     expect(find.text('Vehicle connection'), findsNothing);
   });
 
+  testWidgets('failed destination load can sign out and reach Login', (
+    tester,
+  ) async {
+    final authChanges = StreamController<User?>.broadcast();
+    addTearDown(authChanges.close);
+    var signOutCalls = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthGate(
+          authStateChanges: authChanges.stream,
+          authenticatedDestinationBuilder: (_) async =>
+              throw StateError('Vehicle record unavailable.'),
+          signOutAction: () async {
+            signOutCalls++;
+            authChanges.add(null);
+          },
+        ),
+      ),
+    );
+    authChanges.add(_TestUser());
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('We could not load your saved vehicle details.'),
+      findsOneWidget,
+    );
+    expect(find.text('Retry'), findsOneWidget);
+
+    await tester.tap(find.text('Sign out'));
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(signOutCalls, 1);
+    expect(find.text('Welcome Back'), findsOneWidget);
+    expect(find.textContaining('We could not load'), findsNothing);
+  });
+
   testWidgets('successful Login follows Firebase auth state into the app', (
     tester,
   ) async {

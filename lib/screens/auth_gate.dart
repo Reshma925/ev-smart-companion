@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
 import 'bluetooth_scanning_page.dart';
 import 'login_page.dart';
@@ -8,6 +9,7 @@ import 'signup_page.dart';
 
 typedef AuthenticatedDestinationBuilder = Future<Widget> Function(User user);
 typedef LoginPageBuilder = Widget Function(BuildContext context);
+typedef SignOutAction = Future<void> Function();
 
 class AuthGate extends StatefulWidget {
   const AuthGate({
@@ -15,11 +17,16 @@ class AuthGate extends StatefulWidget {
     this.authStateChanges,
     this.authenticatedDestinationBuilder,
     this.loginPageBuilder,
+    this.signOutAction,
   });
 
   final Stream<User?>? authStateChanges;
   final AuthenticatedDestinationBuilder? authenticatedDestinationBuilder;
   final LoginPageBuilder? loginPageBuilder;
+
+  /// Lets an account stuck in onboarding or a failed destination load reach
+  /// Login again. Defaults to [AuthService.signOut].
+  final SignOutAction? signOutAction;
 
   @override
   State<AuthGate> createState() => _AuthGateState();
@@ -61,11 +68,15 @@ class _AuthGateState extends State<AuthGate> {
         if (user == null) {
           return widget.loginPageBuilder?.call(context) ?? const LoginPage();
         }
+        // AuthService is created lazily so tests without Firebase can run.
+        final signOut = widget.signOutAction ?? () => AuthService().signOut();
         return _AuthenticatedDestination(
           key: ValueKey(user.uid),
           user: user,
           destinationBuilder:
-              widget.authenticatedDestinationBuilder ?? _loadDestination,
+              widget.authenticatedDestinationBuilder ??
+              (user) => _loadDestination(user, signOut),
+          signOutAction: signOut,
         );
       },
     );
@@ -78,11 +89,11 @@ class _AuthStatus {
   final User? user;
 }
 
-Future<Widget> _loadDestination(User user) async {
+Future<Widget> _loadDestination(User user, SignOutAction signOut) async {
   final firestore = FirestoreService();
   final profile = await firestore.getUserProfile(user.uid);
   if (profile == null) {
-    return const SignUpPage(authenticatedOnboarding: true);
+    return SignUpPage(authenticatedOnboarding: true, signOutAction: signOut);
   }
   if (profile.vehicleId == null || profile.vehicleId!.isEmpty) {
     throw StateError(
@@ -104,10 +115,12 @@ class _AuthenticatedDestination extends StatefulWidget {
     super.key,
     required this.user,
     required this.destinationBuilder,
+    required this.signOutAction,
   });
 
   final User user;
   final AuthenticatedDestinationBuilder destinationBuilder;
+  final SignOutAction signOutAction;
 
   @override
   State<_AuthenticatedDestination> createState() =>
@@ -134,6 +147,7 @@ class _AuthenticatedDestinationState extends State<_AuthenticatedDestination> {
           onRetry: () => setState(
             () => _destination = widget.destinationBuilder(widget.user),
           ),
+          onSignOut: widget.signOutAction,
         );
       }
       return const _AuthLoading();
@@ -176,10 +190,15 @@ class _AuthInitializationError extends StatelessWidget {
 }
 
 class _DestinationLoadError extends StatelessWidget {
-  const _DestinationLoadError({required this.message, required this.onRetry});
+  const _DestinationLoadError({
+    required this.message,
+    required this.onRetry,
+    required this.onSignOut,
+  });
 
   final String message;
   final VoidCallback onRetry;
+  final SignOutAction onSignOut;
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -195,6 +214,9 @@ class _DestinationLoadError extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+            const SizedBox(height: 6),
+            // Signing out makes the auth stream emit null, so AuthGate shows Login.
+            TextButton(onPressed: onSignOut, child: const Text('Sign out')),
           ],
         ),
       ),

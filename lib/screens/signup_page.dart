@@ -2,13 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../app_theme.dart';
 import '../models/user_model.dart';
+import '../services/auth_service.dart';
 import '../widgets/common_widgets.dart';
 import 'vehicle_details_page.dart';
 
 class SignUpPage extends StatefulWidget {
-  const SignUpPage({super.key, this.authenticatedOnboarding = false});
+  const SignUpPage({
+    super.key,
+    this.authenticatedOnboarding = false,
+    this.signOutAction,
+  });
 
   final bool authenticatedOnboarding;
+
+  /// Used in authenticated onboarding so a half-registered account can leave
+  /// and reach Login. Defaults to [AuthService.signOut].
+  final Future<void> Function()? signOutAction;
 
   @override
   State<SignUpPage> createState() => _SignUpPageState();
@@ -41,6 +50,24 @@ class _SignUpPageState extends State<SignUpPage> {
     password.dispose();
     confirmPassword.dispose();
     super.dispose();
+  }
+
+  Future<void> signOutOfOnboarding() async {
+    if (isLoading) return;
+    setState(() => isLoading = true);
+    try {
+      await (widget.signOutAction ?? () => AuthService().signOut())();
+    } catch (error) {
+      if (mounted) {
+        await showErrorDialog(
+          context,
+          'Could not sign out. Please try again.',
+          title: 'Sign out failed',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
   }
 
   void continueToVehicleRegistration() {
@@ -192,6 +219,18 @@ class _SignUpPageState extends State<SignUpPage> {
                         ),
                       ),
                     ],
+                  ),
+                ] else ...[
+                  const SizedBox(height: 19),
+                  TextButton(
+                    onPressed: isLoading ? null : signOutOfOnboarding,
+                    child: const Text(
+                      'Sign out and use another account',
+                      style: TextStyle(
+                        color: AppTheme.blue,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
                 ],
               ],

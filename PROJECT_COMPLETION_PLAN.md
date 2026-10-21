@@ -625,7 +625,7 @@ Regression map (Phase 1):
 Phase	Status	Notes
 0. Tools + hardware	☑	Tools verified by agent (Node v24 instead of v22). Developer Mode and phone setup not checked by agent; confirmed at Phase 5.
 1. Protect + audit	☑	Baseline 108 tests pass, analyzer clean. Neither the Phase 2 nor the Phase 3 fix was present.
-2. Login / Sign Up / auth guard / logout	☐	
+2. Login / Sign Up / auth guard / logout	☑	Added `signOutAction` to AuthGate, `_DestinationLoadError` ("Sign out") and onboarding SignUpPage ("Sign out and use another account"). New test for load-error sign-out; 109 tests pass, analyzer clean. Onboarding button has no widget test: SignUpPage reads FirebaseAuth.instance in onboarding initState, so it cannot render without Firebase; verify on device in Phase 5.
 3. Vehicle screen + chooser + BLE	☐	
 4. Shared telemetry, real-data-only	☐	
 5. Real-device check (Part A)	☐	
