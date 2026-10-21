@@ -3,6 +3,7 @@ import { loadEnv } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './db/connect.js';
 import { logger } from './logger.js';
 import { createFirebaseTokenVerifier } from './middleware/auth.js';
+import { createRouters } from './routes/index.js';
 
 const env = loadEnv();
 await connectDatabase({
@@ -15,6 +16,16 @@ const app = createApp({
   nodeEnv: env.nodeEnv,
   corsOrigins: env.corsOrigins,
   verifyIdToken: createFirebaseTokenVerifier(env.firebaseProjectId),
+  routers: createRouters({
+    paypal: {
+      clientId: env.paypalClientId,
+      clientSecret: env.paypalClientSecret,
+      apiBase: env.paypalApiBase,
+      demoExchangeRateInrToUsd: env.demoExchangeRateInrToUsd,
+      fetch,
+    },
+    assistant: { apiKey: env.geminiApiKey, model: env.geminiModel, fetch },
+  }),
 });
 
 const server = app.listen(env.port, () => {

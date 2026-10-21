@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { currentUser } from '../src/middleware/auth.js';
 import { validate, validBody } from '../src/middleware/validate.js';
 import { parseEnv } from '../src/config/env.js';
-import { bearer, testApp } from './helpers.js';
+import { createApp } from '../src/app.js';
+import { bearer, fakeVerifier, testApp } from './helpers.js';
 
 const echoSchema = z.object({ name: z.string().max(10) });
 const probe = Router();
@@ -86,6 +87,28 @@ describe('app skeleton', () => {
 
   it('has the in-memory replica set connected for later tests', () => {
     expect(mongoose.connection.readyState).toBe(1);
+  });
+});
+
+describe('production errors', () => {
+  it('hide internal messages and stack traces', async () => {
+    const failing = Router();
+    failing.get('/boom', () => {
+      throw new Error('secret internal detail at db.ts:42');
+    });
+    const app = createApp({
+      nodeEnv: 'production',
+      corsOrigins: [],
+      verifyIdToken: fakeVerifier,
+      routers: [failing],
+    });
+    const response = await request(app).get('/v1/boom').set(bearer('user-a'));
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({
+      error: { code: 'internal_error', message: 'Something went wrong. Please try again.' },
+    });
+    expect(response.text).not.toContain('secret');
+    expect(response.text).not.toContain('db.ts');
   });
 });
 

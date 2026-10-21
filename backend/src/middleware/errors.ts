@@ -1,4 +1,5 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express';
+import mongoose from 'mongoose';
 import { ZodError } from 'zod';
 
 import { logger } from '../logger.js';
@@ -42,6 +43,15 @@ export function createErrorHandler(options: {
     }
     if (error instanceof ZodError) {
       res.status(400).json({ error: { code: 'invalid_request', message: zodMessage(error) } });
+      return;
+    }
+    if (
+      error instanceof mongoose.Error.ValidationError ||
+      error instanceof mongoose.Error.CastError
+    ) {
+      res.status(400).json({
+        error: { code: 'invalid_request', message: 'The request contains invalid values.' },
+      });
       return;
     }
     const type = (error as { type?: unknown } | null)?.type;
