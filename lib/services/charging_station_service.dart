@@ -22,15 +22,17 @@ class ChargingStationService {
   ChargingStationService({http.Client? client})
     : _client = client ?? http.Client();
 
-  // Public Overpass servers that allow browser (CORS) requests. When one is
-  // overloaded (429/5xx) or slow, the next is tried.
+  // Public Overpass servers that allow browser (CORS) requests. They are
+  // often overloaded, so a slow server does not block the others: the next
+  // one starts after [_staggerDelay] (or at once when one fails) and the first
+  // good answer wins.
   static final List<Uri> _endpoints = [
     Uri.https('overpass-api.de', '/api/interpreter'),
     Uri.https('maps.mail.ru', '/osm/tools/overpass/api/interpreter'),
     Uri.https('overpass.private.coffee', '/api/interpreter'),
     Uri.https('overpass.kumi.systems', '/api/interpreter'),
   ];
-  static const _retryableStatusCodes = {429, 500, 502, 503, 504};
+  static const _staggerDelay = Duration(seconds: 8);
   // The server that answered last is tried first next time.
   static int _preferredEndpoint = 0;
   static const double defaultRouteCorridorWidthKm = 5;
@@ -46,15 +48,12 @@ class ChargingStationService {
       throw ArgumentError.value(radiusKm, 'radiusKm', 'Must be positive.');
     }
 
-    final radiusMeters = (radiusKm * 1000).round();
+    // A bounding box is much cheaper for Overpass than a large `around`
+    // circle; stations outside the circle are filtered out below.
     final query =
         '''
 [out:json][timeout:25];
-(
-  node["amenity"="charging_station"](around:$radiusMeters,${center.latitude},${center.longitude});
-  way["amenity"="charging_station"](around:$radiusMeters,${center.latitude},${center.longitude});
-  relation["amenity"="charging_station"](around:$radiusMeters,${center.latitude},${center.longitude});
-);
+nwr["amenity"="charging_station"](${_bbox(center, radiusKm)});
 out center tags;
 ''';
 
@@ -77,8 +76,7 @@ out center tags;
     }
     final response = await _postOverpass(
       query,
-      perServer: const Duration(seconds: 25),
-      total: const Duration(seconds: 60),
+      total: const Duration(seconds: 45),
     );
 
     final decoded = jsonDecode(response.body);
@@ -144,21 +142,15 @@ out center tags;
           .toList(growable: false);
     }
 
-    final radiusMeters = (searchRadiusKm * 1000).round();
     final query =
         '''
 [out:json][timeout:25];
-(
-  node["amenity"="charging_station"](around:$radiusMeters,${origin.latitude},${origin.longitude});
-  way["amenity"="charging_station"](around:$radiusMeters,${origin.latitude},${origin.longitude});
-  relation["amenity"="charging_station"](around:$radiusMeters,${origin.latitude},${origin.longitude});
-);
+nwr["amenity"="charging_station"](${_bbox(origin, searchRadiusKm)});
 out center tags;
 ''';
     final response = await _postOverpass(
       query,
-      perServer: const Duration(seconds: 25),
-      total: const Duration(seconds: 60),
+      total: const Duration(seconds: 45),
     );
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic> || decoded['elements'] is! List) {
@@ -227,37 +219,22 @@ out center tags;
     final cached = _cached(cacheKey);
     if (cached != null) return List.unmodifiable(cached);
 
-    final sampleSpacingKm = math.min(10.0, corridorWidthKm);
-    final centers = _sampleRoute(routePoints, sampleSpacingKm);
-    final radiusMeters = ((corridorWidthKm + sampleSpacingKm / 2) * 1000)
-        .ceil();
+    // One bounding box per ~50 km of road (widened by the corridor) keeps
+    // the query small; stations outside the corridor are filtered out below.
     final selectors = StringBuffer();
-    for (final center in centers) {
-      selectors
-        ..writeln(
-          'node["amenity"="charging_station"]'
-          '(around:$radiusMeters,${center.latitude},${center.longitude});',
-        )
-        ..writeln(
-          'way["amenity"="charging_station"]'
-          '(around:$radiusMeters,${center.latitude},${center.longitude});',
-        )
-        ..writeln(
-          'relation["amenity"="charging_station"]'
-          '(around:$radiusMeters,${center.latitude},${center.longitude});',
-        );
+    for (final box in _routeBoxes(routePoints, corridorWidthKm)) {
+      selectors.writeln('nwr["amenity"="charging_station"]($box);');
     }
     final query =
         '''
-[out:json][timeout:60];
+[out:json][timeout:50];
 (
 $selectors);
 out center tags;
 ''';
     final response = await _postOverpass(
       query,
-      perServer: const Duration(seconds: 60),
-      total: const Duration(seconds: 120),
+      total: const Duration(seconds: 60),
     );
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic> || decoded['elements'] is! List) {
@@ -334,57 +311,99 @@ out center tags;
   static String _normalizedIdentity(Object? value) =>
       value?.toString().trim().toLowerCase() ?? '';
 
-  /// Posts an Overpass query, falling back to the next server when one is
-  /// overloaded or slow. Throws [MapServiceBusyException] when all fail.
+  /// Posts an Overpass query to the servers in turn, starting the next one
+  /// every [_staggerDelay] or as soon as one fails, and returns the first good
+  /// answer. Throws [MapServiceBusyException] when every server failed or
+  /// [total] has passed, so the screen never waits longer than that.
   Future<http.Response> _postOverpass(
     String query, {
-    required Duration perServer,
     required Duration total,
   }) async {
-    final stopwatch = Stopwatch()..start();
-    for (var attempt = 0; attempt < _endpoints.length; attempt++) {
-      final remaining = total - stopwatch.elapsed;
-      if (remaining < const Duration(seconds: 3)) break;
-      final index = (_preferredEndpoint + attempt) % _endpoints.length;
-      final endpoint = _endpoints[index];
-      try {
-        final response = await _client
-            .post(
-              endpoint,
-              headers: const {
-                'Accept': 'application/json',
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: {'data': query},
-            )
-            .timeout(remaining < perServer ? remaining : perServer);
-        // A 200 can still carry an Overpass timeout/out-of-memory remark.
-        final overloaded =
-            response.statusCode == 200 &&
-            response.body.contains('"remark"') &&
-            response.body.contains('runtime error');
-        if (response.statusCode == 200 && !overloaded) {
-          _preferredEndpoint = index;
-          return response;
-        }
-        debugPrint(
-          'OpenStreetMap server ${endpoint.host} returned '
-          '${overloaded ? 'a runtime error' : 'HTTP ${response.statusCode}'}.',
-        );
-        if (!overloaded &&
-            !_retryableStatusCodes.contains(response.statusCode)) {
-          throw StateError(
-            'OpenStreetMap rejected the station search '
-            '(${response.statusCode}).',
-          );
-        }
-      } on TimeoutException {
-        debugPrint('OpenStreetMap server ${endpoint.host} timed out.');
-      } on http.ClientException catch (error) {
-        debugPrint('OpenStreetMap server ${endpoint.host} failed: $error');
-      }
+    final result = Completer<http.Response>();
+    final order = [
+      for (var i = 0; i < _endpoints.length; i++)
+        (_preferredEndpoint + i) % _endpoints.length,
+    ];
+    var started = 0;
+    var running = 0;
+
+    void startNext() {
+      if (result.isCompleted || started >= order.length) return;
+      final index = order[started++];
+      running++;
+      _tryEndpoint(index, query, total).then(
+        (response) {
+          running--;
+          if (result.isCompleted) return;
+          if (response != null) {
+            _preferredEndpoint = index;
+            result.complete(response);
+            return;
+          }
+          startNext();
+          if (running == 0) {
+            result.completeError(const MapServiceBusyException());
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          running--;
+          if (!result.isCompleted) result.completeError(error, stackTrace);
+        },
+      );
     }
-    throw const MapServiceBusyException();
+
+    startNext();
+    final stagger = Timer.periodic(_staggerDelay, (_) => startNext());
+    try {
+      return await result.future.timeout(
+        total,
+        onTimeout: () => throw const MapServiceBusyException(),
+      );
+    } finally {
+      stagger.cancel();
+    }
+  }
+
+  /// One server attempt: the response, or null when the server is busy,
+  /// refusing or unreachable. A rejected (malformed) query is thrown.
+  Future<http.Response?> _tryEndpoint(
+    int index,
+    String query,
+    Duration timeout,
+  ) async {
+    final endpoint = _endpoints[index];
+    try {
+      final response = await _client
+          .post(
+            endpoint,
+            headers: const {
+              'Accept': 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: {'data': query},
+          )
+          .timeout(timeout);
+      // A 200 can still carry an Overpass timeout/out-of-memory remark.
+      final overloaded =
+          response.statusCode == 200 &&
+          response.body.contains('"remark"') &&
+          response.body.contains('runtime error');
+      if (response.statusCode == 200 && !overloaded) return response;
+      debugPrint(
+        'OpenStreetMap server ${endpoint.host} returned '
+        '${overloaded ? 'a runtime error' : 'HTTP ${response.statusCode}'}.',
+      );
+      if (response.statusCode == 400) {
+        throw StateError(
+          'OpenStreetMap rejected the station search (${response.statusCode}).',
+        );
+      }
+    } on TimeoutException {
+      debugPrint('OpenStreetMap server ${endpoint.host} timed out.');
+    } on http.ClientException catch (error) {
+      debugPrint('OpenStreetMap server ${endpoint.host} failed: $error');
+    }
+    return null;
   }
 
   List<ChargingStation>? _cached(String key) {
@@ -429,31 +448,55 @@ out center tags;
   static double distanceToRouteKm(LatLng point, List<LatLng> route) =>
       _distanceToRouteKm(point, route);
 
-  static List<LatLng> _sampleRoute(List<LatLng> route, double spacingKm) {
-    final samples = <LatLng>[route.first];
-    var distanceSinceSample = 0.0;
-    for (var index = 1; index < route.length; index++) {
-      final start = route[index - 1];
-      final end = route[index];
-      final segmentLength = ChargingStation.distanceBetweenKm(start, end);
-      var consumed = 0.0;
-      while (segmentLength > 0 &&
-          distanceSinceSample + segmentLength - consumed >= spacingKm) {
-        final needed = spacingKm - distanceSinceSample;
-        consumed += needed;
-        final fraction = consumed / segmentLength;
-        samples.add(
-          LatLng(
-            start.latitude + (end.latitude - start.latitude) * fraction,
-            start.longitude + (end.longitude - start.longitude) * fraction,
-          ),
-        );
-        distanceSinceSample = 0;
-      }
-      distanceSinceSample += segmentLength - consumed;
+  /// `south,west,north,east` of a square around [center] covering [radiusKm].
+  static String _bbox(LatLng center, double radiusKm) =>
+      _boxAround([center], radiusKm);
+
+  static String _boxAround(List<LatLng> points, double marginKm) {
+    var south = points.first.latitude;
+    var north = south;
+    var west = points.first.longitude;
+    var east = west;
+    for (final point in points) {
+      south = math.min(south, point.latitude);
+      north = math.max(north, point.latitude);
+      west = math.min(west, point.longitude);
+      east = math.max(east, point.longitude);
     }
-    if (samples.last != route.last) samples.add(route.last);
-    return samples;
+    final latMargin = marginKm / 110.574;
+    final widestLatitude = math.max(south.abs(), north.abs()) + latMargin;
+    final cosLat = math.cos(math.min(widestLatitude, 89.0) * math.pi / 180);
+    final lonMargin = marginKm / (111.320 * cosLat);
+    String fixed(double value) => value.toStringAsFixed(5);
+    return '${fixed(math.max(-90, south - latMargin))},'
+        '${fixed(math.max(-180, west - lonMargin))},'
+        '${fixed(math.min(90, north + latMargin))},'
+        '${fixed(math.min(180, east + lonMargin))}';
+  }
+
+  /// Splits the route into ~50 km pieces and returns one box per piece,
+  /// widened by the corridor.
+  static List<String> _routeBoxes(List<LatLng> route, double corridorWidthKm) {
+    const pieceKm = 50.0;
+    final boxes = <String>[];
+    var piece = <LatLng>[route.first];
+    var pieceLength = 0.0;
+    for (var index = 1; index < route.length; index++) {
+      pieceLength += ChargingStation.distanceBetweenKm(
+        route[index - 1],
+        route[index],
+      );
+      piece.add(route[index]);
+      if (pieceLength >= pieceKm) {
+        boxes.add(_boxAround(piece, corridorWidthKm));
+        piece = [route[index]];
+        pieceLength = 0;
+      }
+    }
+    if (piece.length > 1 || boxes.isEmpty) {
+      boxes.add(_boxAround(piece, corridorWidthKm));
+    }
+    return boxes;
   }
 
   void close() {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -111,7 +112,7 @@ void main() {
   });
 
   test(
-    'queries Overpass using the range radius and sorts by distance',
+    'queries Overpass with a box covering the range radius and sorts by distance',
     () async {
       late String query;
       final client = MockClient((request) async {
@@ -146,7 +147,11 @@ void main() {
         radiusKm: 30,
       );
 
-      expect(query, contains('around:30000,13.0827,80.2707'));
+      expect(
+        query,
+        contains('nwr["amenity"="charging_station"](12.81139,79.99'),
+      );
+      expect(query, isNot(contains('around:')));
       expect(stations.map((station) => station.operator), ['A', 'B']);
       expect(stations.first.distanceKm, lessThan(stations.last.distanceKm));
     },
@@ -298,7 +303,7 @@ void main() {
       corridorWidthKm: 5,
     );
 
-    expect(query, contains('around:100000,0.0,0.0'));
+    expect(query, contains('(-0.90437,-0.89842,0.90437,0.89842)'));
     expect(stations.map((station) => station.name), ['On route']);
     expect(stations.single.distanceFromRouteKm, closeTo(1.1, 0.2));
     expect(stations.single.distanceKm, greaterThan(40));
@@ -347,8 +352,8 @@ void main() {
         corridorWidthKm: 5,
       );
 
-      expect(query, contains('around:7500'));
-      expect(query, contains(',0.0,2.0'));
+      expect(query, contains('(-0.04522,-0.04492,0.04522,2.04492)'));
+      expect(query, isNot(contains('around:')));
       expect(stations.map((station) => station.name), ['Far route station']);
       expect(stations.single.distanceKm, greaterThan(200));
       expect(stations.single.distanceFromRouteKm, closeTo(0, 0.01));
@@ -440,6 +445,67 @@ void main() {
         ),
       );
       expect(calls, 4);
+    });
+
+    test('a refusing server (406) falls through to the next one', () async {
+      final hosts = <String>[];
+      final client = MockClient((request) async {
+        hosts.add(request.url.host);
+        return hosts.length == 1
+            ? http.Response('<h1>406 Not Acceptable</h1>', 406)
+            : http.Response(okBody, 200);
+      });
+
+      final stations = await ChargingStationService(
+        client: client,
+      ).findNearbyStations(center: center, radiusKm: 5);
+
+      expect(stations, hasLength(1));
+      expect(hosts, hasLength(2));
+    });
+
+    testWidgets('a hanging server does not block the next one', (tester) async {
+      final hanging = Completer<http.Response>();
+      final hosts = <String>[];
+      final client = MockClient((request) {
+        hosts.add(request.url.host);
+        return hosts.length == 1
+            ? hanging.future
+            : Future.value(http.Response(okBody, 200));
+      });
+      List<ChargingStation>? stations;
+      ChargingStationService(client: client)
+          .findNearbyStations(center: center, radiusKm: 5)
+          .then((value) => stations = value);
+
+      await tester.pump(const Duration(seconds: 7));
+      expect(stations, isNull);
+      expect(hosts, hasLength(1));
+      await tester.pump(const Duration(seconds: 2));
+      expect(hosts, hasLength(2));
+      expect(stations, hasLength(1));
+      hanging.complete(http.Response('late', 504));
+      await tester.pump();
+    });
+
+    testWidgets('gives up with the busy message at the overall time limit', (
+      tester,
+    ) async {
+      final client = MockClient((_) => Completer<http.Response>().future);
+      Object? error;
+      ChargingStationService(client: client)
+          .findNearbyStations(center: const LatLng(12.5, 79.8), radiusKm: 5)
+          .catchError((Object e) {
+            error = e;
+            return const <ChargingStation>[];
+          });
+
+      await tester.pump(const Duration(seconds: 44));
+      expect(error, isNull);
+      await tester.pump(const Duration(seconds: 2));
+      expect(error, isA<MapServiceBusyException>());
+      // Let the abandoned requests' own time limits run out.
+      await tester.pump(const Duration(seconds: 30));
     });
 
     test('a rejected query is not retried on other servers', () async {
