@@ -6,7 +6,7 @@ import '../models/user_model.dart';
 import '../models/vehicle.dart';
 import '../services/auth_service.dart';
 import '../services/distance_unit_service.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/vehicle_ble_state_view.dart';
 import 'auth_gate.dart';
@@ -28,7 +28,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
   final ownerName = TextEditingController();
   final vin = TextEditingController();
   final authService = AuthService();
-  final firestoreService = FirestoreService();
+  final dataService = DataService();
   String? _distanceUnit;
   String? _distanceUnitError;
   bool isLoading = false;
@@ -43,7 +43,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
     try {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) throw StateError('Sign in to load vehicle preferences.');
-      final profile = await firestoreService.getUserProfile(uid);
+      final profile = await dataService.getUserProfile(uid);
       if (profile == null) {
         throw StateError('Your Firebase user profile is unavailable.');
       }
@@ -110,7 +110,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
         );
       }
 
-      final existingProfile = await firestoreService.getUserProfile(user.uid);
+      final existingProfile = await dataService.getUserProfile(user.uid);
       if (existingProfile == null) {
         final profileName = signup?.name.trim().isNotEmpty == true
             ? signup!.name.trim()
@@ -123,7 +123,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
         }
 
         profileProvisioningAttempted = true;
-        await firestoreService.verifyAndCreateUserProfile(
+        await dataService.verifyAndCreateUserProfile(
           uid: user.uid,
           name: profileName,
           email: user.email ?? signup?.email ?? '',
@@ -134,7 +134,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
           vin: vin.text,
         );
       } else {
-        final vehicle = await firestoreService.verifyConnectedVehicleDetails(
+        final vehicle = await dataService.verifyConnectedVehicleDetails(
           uid: user.uid,
           registrationNumber: registration.text,
           model: model.text,
@@ -284,7 +284,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                               capacityController.text.trim().isEmpty
                               ? null
                               : double.parse(capacityController.text.trim());
-                          await firestoreService.updateVehicleConfiguration(
+                          await dataService.updateVehicleConfiguration(
                             vehicleId: vehicle.id,
                             maximumRangeKm: double.parse(
                               rangeController.text.trim(),
@@ -322,7 +322,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
       );
 
       if (saved == true && mounted) {
-        final refreshed = await firestoreService.getVehicleRecordById(
+        final refreshed = await dataService.getVehicleRecordById(
           vehicle.id,
         );
         if (!mounted) return;
@@ -522,7 +522,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
 
     if (vehicle != null) {
       return StreamBuilder<Vehicle?>(
-        stream: firestoreService.watchVehicleById(vehicle.id),
+        stream: dataService.watchVehicleById(vehicle.id),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Scaffold(

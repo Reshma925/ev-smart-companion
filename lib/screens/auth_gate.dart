@@ -2,7 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 import 'bluetooth_scanning_page.dart';
 import 'login_page.dart';
 import 'signup_page.dart';
@@ -90,7 +90,7 @@ class _AuthStatus {
 }
 
 Future<Widget> _loadDestination(User user, SignOutAction signOut) async {
-  final firestore = FirestoreService();
+  final firestore = DataService();
   final profile = await firestore.getUserProfile(user.uid);
   if (profile == null) {
     return SignUpPage(authenticatedOnboarding: true, signOutAction: signOut);

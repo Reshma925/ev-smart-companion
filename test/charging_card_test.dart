@@ -1,21 +1,20 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_2/models/charging_card.dart';
 
 void main() {
-  test('parses charging-card values supplied by Firestore', () {
+  test('parses charging-card values supplied by the backend', () {
     final card = ChargingCard.fromMap({
-      'cardNumber': '1234 5678 9012 4821',
+      'cardLastFour': '4821',
       'cardType': 'EV Smart Card',
       'cardHolderName': 'Maheswara',
       'balance': 1250,
       'currency': 'INR',
       'status': 'ACTIVE',
       'vehicleId': 'EV001',
-      'expiryDate': Timestamp.fromDate(DateTime(2028, 12)),
-      'registeredAt': Timestamp.fromDate(DateTime(2026, 10, 2)),
+      'expiryDate': DateTime(2028, 12).toUtc().toIso8601String(),
+      'registeredAt': DateTime(2026, 10, 2).toUtc().toIso8601String(),
       'lastRechargeAmount': 500,
-      'lastRechargeDate': Timestamp.fromDate(DateTime(2026, 10, 2)),
+      'lastRechargeDate': DateTime(2026, 10, 2).toUtc().toIso8601String(),
     }, id: 'current');
 
     expect(card.id, 'current');
@@ -49,7 +48,7 @@ void main() {
       'operator': 'Operator',
       'cardId': 'current',
       'sessionReferenceId': 'session-42',
-      'timestamp': Timestamp.fromDate(DateTime(2026, 10, 2)),
+      'timestamp': DateTime(2026, 10, 2).toUtc().toIso8601String(),
       'status': 'completed',
     }, id: 'transaction-1');
 
@@ -94,9 +93,9 @@ void main() {
     expect(transaction.status, 'completed');
   });
 
-  test('masks card numbers while preserving legacy masked values', () {
+  test('masks the last four while preserving legacy masked values', () {
     final newCard = ChargingCard.fromMap({
-      'cardNumber': 'EV-001-1234',
+      'cardLastFour': '1234',
     }, id: 'current');
     final legacyCard = ChargingCard.fromMap({
       'maskedCardNumber': '•••• 4821',
@@ -120,7 +119,6 @@ void main() {
         'status': 'ACTIVE',
       }, id: 'current');
 
-      expect(card.cardNumber, isNull);
       expect(card.displayCardNumber, 'XXXX XXXX XXXX 4321');
       expect(card.vehicleId, 'EV002');
     },

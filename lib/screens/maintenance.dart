@@ -1,4 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,19 +7,16 @@ import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../models/vehicle_health.dart';
 import '../models/vehicle_telemetry.dart';
-import '../services/firestore_service.dart';
+import '../services/api/api_client.dart';
+import '../services/data_service.dart';
 import '../services/maintenance_schedule_service.dart';
 import '../widgets/vehicle_ble_state_view.dart';
 
 class MaintenancePage extends StatefulWidget {
-  const MaintenancePage({
-    super.key,
-    required this.vehicle,
-    this.firestoreService,
-  });
+  const MaintenancePage({super.key, required this.vehicle, this.dataService});
 
   final Vehicle vehicle;
-  final FirestoreService? firestoreService;
+  final DataService? dataService;
 
   @override
   State<MaintenancePage> createState() => _MaintenancePageState();
@@ -35,11 +31,10 @@ class _MaintenancePageState extends State<MaintenancePage> {
     'Software',
     'Other',
   ];
-  late final FirestoreService _firestore =
-      widget.firestoreService ?? FirestoreService();
-  late final Stream<List<VehicleMaintenanceRecord>> _recordsStream = _firestore
+  late final DataService _data = widget.dataService ?? DataService();
+  late final Stream<List<VehicleMaintenanceRecord>> _recordsStream = _data
       .watchVehicleMaintenanceRecords(widget.vehicle.id);
-  late final Stream<Vehicle?> _vehicleStream = _firestore.watchVehicleById(
+  late final Stream<Vehicle?> _vehicleStream = _data.watchVehicleById(
     widget.vehicle.id,
   );
   String _selectedCategory = 'All';
@@ -203,7 +198,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
       );
 
       if (confirmed != true || serviceDate == null) return;
-      await _firestore.addVehicleMaintenanceRecord(
+      await _data.addVehicleMaintenanceRecord(
         vehicleId: widget.vehicle.id,
         serviceType: typeController.text,
         category: category,
@@ -215,18 +210,18 @@ class _MaintenancePageState extends State<MaintenancePage> {
         notes: notesController.text,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Service record saved to Firebase.')),
-      );
-    } on FirebaseException catch (error) {
-      debugPrint('Maintenance Firestore write failed (${error.code}).');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Service record saved.')));
+    } on ApiException catch (error) {
+      debugPrint('Maintenance record save failed (${error.code}).');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            error.code == 'permission-denied'
+            error.code == 'vehicle_not_found'
                 ? 'You do not have access to save service records for this vehicle.'
-                : 'Could not save the record. Check your connection and try again.',
+                : 'Could not save the record. ${error.message}',
           ),
         ),
       );
@@ -363,55 +358,59 @@ class _MaintenancePageState extends State<MaintenancePage> {
                     ? snapshot
                     : null;
                 const VehicleData? telemetry = null;
-                return ListView(
-                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 100),
-                  children: [
-                    _VehicleHeader(vehicle: vehicle, odometerKm: null),
-                    const SizedBox(height: 14),
-                    _LiveTelemetrySummary(snapshot: matchingSnapshot),
-                    const SizedBox(height: 14),
-                    _MaintenanceOverview(records: records),
-                    const SizedBox(height: 22),
-                    _SectionHeading(
-                      title: 'Attention needed',
-                      subtitle: telemetry == null
-                          ? 'Only simulator measurements are used. Unsupported diagnostics remain unavailable.'
-                          : 'Rule-based checks from simulator measurements.',
-                    ),
-                    const SizedBox(height: 10),
-                    _SignalAlerts(telemetry: telemetry),
-                    const SizedBox(height: 22),
-                    _CostSummary(records: records, odometerKm: null),
-                    const SizedBox(height: 22),
-                    _SectionHeading(
-                      title: 'Service history',
-                      subtitle: records.isEmpty
-                          ? 'No service records yet.'
-                          : '${records.length} user-entered ${records.length == 1 ? 'record' : 'records'}',
-                      action: TextButton.icon(
-                        onPressed: _addRecord,
-                        icon: const Icon(Icons.add, size: 18),
-                        label: const Text('Add'),
+                return RefreshIndicator(
+                  onRefresh: _data.refresh,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(18, 14, 18, 100),
+                    children: [
+                      _VehicleHeader(vehicle: vehicle, odometerKm: null),
+                      const SizedBox(height: 14),
+                      _LiveTelemetrySummary(snapshot: matchingSnapshot),
+                      const SizedBox(height: 14),
+                      _MaintenanceOverview(records: records),
+                      const SizedBox(height: 22),
+                      _SectionHeading(
+                        title: 'Attention needed',
+                        subtitle: telemetry == null
+                            ? 'Only simulator measurements are used. Unsupported diagnostics remain unavailable.'
+                            : 'Rule-based checks from simulator measurements.',
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    _CategoryFilter(
-                      categories: _categories,
-                      selected: _selectedCategory,
-                      onSelected: (category) {
-                        setState(() => _selectedCategory = category);
-                      },
-                    ),
-                    const SizedBox(height: 10),
-                    _ServiceHistory(
-                      records: records,
-                      category: _selectedCategory,
-                      onRecordTap: _showRecordDetails,
-                      onAdd: _addRecord,
-                    ),
-                    const SizedBox(height: 22),
-                    const _CoverageNotice(),
-                  ],
+                      const SizedBox(height: 10),
+                      _SignalAlerts(telemetry: telemetry),
+                      const SizedBox(height: 22),
+                      _CostSummary(records: records, odometerKm: null),
+                      const SizedBox(height: 22),
+                      _SectionHeading(
+                        title: 'Service history',
+                        subtitle: records.isEmpty
+                            ? 'No service records yet.'
+                            : '${records.length} user-entered ${records.length == 1 ? 'record' : 'records'}',
+                        action: TextButton.icon(
+                          onPressed: _addRecord,
+                          icon: const Icon(Icons.add, size: 18),
+                          label: const Text('Add'),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      _CategoryFilter(
+                        categories: _categories,
+                        selected: _selectedCategory,
+                        onSelected: (category) {
+                          setState(() => _selectedCategory = category);
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      _ServiceHistory(
+                        records: records,
+                        category: _selectedCategory,
+                        onRecordTap: _showRecordDetails,
+                        onAdd: _addRecord,
+                      ),
+                      const SizedBox(height: 22),
+                      const _CoverageNotice(),
+                    ],
+                  ),
                 );
               },
             ),
@@ -423,9 +422,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
 }
 
 String _maintenanceReadError(Object? error) {
-  if (error is FirebaseException) {
-    return '${error.code}: ${error.message ?? '(no message)'}';
-  }
+  if (error is ApiException) return error.message;
   return error == null ? 'Unknown error' : error.runtimeType.toString();
 }
 

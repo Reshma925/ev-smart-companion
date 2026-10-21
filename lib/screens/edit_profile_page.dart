@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import '../app_theme.dart';
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key, required this.profile});
@@ -22,7 +22,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   final _phoneController = TextEditingController();
   final _cityController = TextEditingController();
   final _dateOfBirthController = TextEditingController();
-  final _firestore = FirestoreService();
+  final _data = DataService();
   final _auth = AuthService();
   bool _saving = false;
   DateTime? _selectedDateOfBirth;
@@ -77,7 +77,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
     setState(() => _saving = true);
     try {
-      await _firestore.updateUserProfile(
+      await _data.updateUserProfile(
         uid: user.uid,
         name: _nameController.text,
         phone: _phoneController.text,

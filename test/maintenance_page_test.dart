@@ -1,14 +1,14 @@
-import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
 import 'package:flutter_application_2/screens/maintenance.dart';
-import 'package:flutter_application_2/services/firestore_service.dart';
 import 'package:flutter_application_2/services/vehicle_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/fake_api.dart';
+
 void main() {
   testWidgets(
-    'shows Firebase-backed empty maintenance state without invented data',
+    'shows the empty maintenance state from the backend without invented data',
     (tester) async {
       const vehicle = Vehicle(
         id: 'maintenance-test-ev',
@@ -17,25 +17,23 @@ void main() {
         ownerName: 'Driver',
         vin: 'TEST-VIN',
       );
-      final firestore = FakeFirebaseFirestore();
       VehicleBleClient.shared.snapshot.value = null;
       addTearDown(() => VehicleBleClient.shared.snapshot.value = null);
-      await firestore.collection('vehicles').doc(vehicle.id).set({
-        ...vehicle.toMap(),
-        'isActive': true,
-      });
-      await firestore
-          .collection('vehicles')
-          .doc(vehicle.id)
-          .collection('telemetry')
-          .doc('live')
-          .set({'battery': 88, 'range': 300});
+      final api = FakeApi()
+        ..on(
+          'GET /v1/vehicles/${vehicle.id}',
+          (_) => {'id': vehicle.id, ...vehicle.toMap(), 'isActive': true},
+        )
+        ..on(
+          'GET /v1/vehicles/${vehicle.id}/maintenance',
+          (_) => {'records': <Object>[]},
+        );
 
       await tester.pumpWidget(
         MaterialApp(
           home: MaintenancePage(
             vehicle: vehicle,
-            firestoreService: FirestoreService(firestore: firestore),
+            dataService: api.dataService(),
           ),
         ),
       );

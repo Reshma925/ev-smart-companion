@@ -6,7 +6,7 @@ Smart Companion app use the shared BLE central. The user must click
 Controls does not start BLE automatically. For the demonstration, run the main
 app in desktop Chrome and run the separate `vehicle_simulator/` Android app as
 the BLE peripheral on the Samsung phone. The simulator sends all demo state
-over BLE; it does not write to Firestore. The main app accepts state only when
+over BLE; it does not write to the backend or database. The main app accepts state only when
 its `vehicleId` matches the vehicle selected by the signed-in user.
 
 Firebase restores a valid persistent sign-in session on launch. A restored
@@ -29,34 +29,36 @@ The chooser and device permission are managed by Chrome, not Firebase.
 
 ## Run on Windows PowerShell
 
-Start each command group in its own terminal. Keep the Functions emulator and
-the simulator running while using the web app.
+Start each command group in its own terminal, from the repository folder.
+Keep the backend and the simulator running while using the web app. The
+Firebase Functions emulator is no longer needed.
 
-**Terminal 1 — Firebase Functions emulator**
+**Terminal 1 — Backend API (needs `backend/.env`, see `backend/README.md`)**
 
 ```powershell
-Set-Location "C:\Users\pradh\OneDrive\Desktop\volt_sync"
-firebase emulators:start --only functions --project smart-ev-learning-companion
+cd backend
+npm run dev
 ```
+
+Check it at http://localhost:8081/health (`{"status":"ok"}`).
 
 **Terminal 2 — BLE peripheral on the Android phone**
 
 ```powershell
-Set-Location "C:\Users\pradh\OneDrive\Desktop\volt_sync\vehicle_simulator"
-flutter run -d RZCW8043N1N
+cd vehicle_simulator
+flutter run -d <your-phone-id>
 ```
 
-If that device ID changes, run `flutter devices` in this terminal and use the
-ID shown for the connected phone.
+Run `flutter devices` in this terminal and use the ID shown for the connected
+phone.
 
 **Terminal 3 — Main app in Chrome**
 
 ```powershell
-Set-Location "C:\Users\pradh\OneDrive\Desktop\volt_sync"
-flutter run -d chrome --web-hostname localhost --web-port 5100
+flutter run -d chrome --web-hostname localhost --web-port 5100 --dart-define=API_BASE_URL=http://localhost:8081
 ```
 
-In the simulator, enter the selected Firestore vehicle document ID and start
+In the simulator, enter the selected vehicle ID (for example `EV001`) and start
 advertising. In the web app, click **Connect Vehicle** on the Vehicle
 connection screen or in **Vehicle controls**. Select `EV-Simulator-01` from
 Chrome's chooser. A successful BLE state is shown only after a valid snapshot
@@ -104,26 +106,25 @@ action on the Vehicle connection screen or Controls; opening other pages never
 starts a second BLE connection.
 
 Live battery, range, speed, charging, and control-state values are shown only
-when a snapshot for the currently selected Firestore vehicle document ID is
+when a snapshot for the currently selected vehicle ID is
 available. Disconnecting clears the shared snapshot, so consumers immediately
 show unavailable values. The protocol is event-driven and does not send a
 heartbeat; the app does not invent a stale timeout, and considers the last
 snapshot current while the BLE link remains connected.
 
-Firestore remains the source for vehicle/account metadata, station data,
-service history, and Controls preferences. It is not a fallback source for
-live measurements. The BLE schema does not include battery health, health
+The backend (MongoDB) is the source for vehicle/account metadata, service
+history, charging cards and Controls preferences; charging stations come from
+OpenStreetMap. Neither is a fallback source for live measurements, and the
+backend does not store or serve telemetry. The BLE schema does not include battery health, health
 scores, motor temperature, tire pressure/condition, odometer, voltage, or
 similar diagnostics; those remain unavailable rather than being inferred from
-Firestore or vehicle configuration.
+the database or vehicle configuration.
 
-Controls preferences are stored at
-`users/{uid}/vehicles/{vehicleId}/controls/preferences`. On first access, the
-app initializes this document transactionally after verifying the signed-in
-owner, vehicle membership, and active vehicle. Firestore rules must be deployed
-from the repository before first-use initialization can succeed. A permission
-error is shown as an error with retry; the app does not substitute local or
-simulated preferences.
+Controls preferences are stored per user and vehicle by the backend
+(`GET`/`PUT /v1/vehicles/{vehicleId}/controls-preferences`). The backend checks
+that the signed-in user owns the active vehicle; when nothing is saved yet it
+returns the default preferences. An access error is shown as an error with
+retry; the app does not substitute local or simulated preferences.
 
 Safety alerts identify the affected door and distinguish open doors from
 unlocked doors while moving. Active alert conditions are saved with the

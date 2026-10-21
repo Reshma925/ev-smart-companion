@@ -29,7 +29,7 @@ class _LearnScreenState extends State<LearnScreen> {
   final TextEditingController _questionController = TextEditingController();
   final Set<String> _completedLessonIds = {};
   late final EvLearningAssistant _assistant =
-      widget.assistant ?? FirebaseLearningAssistantService();
+      widget.assistant ?? ApiLearningAssistantService();
   String? _answer;
   String? _assistantError;
   bool _asking = false;

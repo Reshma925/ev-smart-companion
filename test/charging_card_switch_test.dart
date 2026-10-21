@@ -1,23 +1,24 @@
 import 'dart:async';
 
-import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_2/models/charging_card.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
-import 'package:flutter_application_2/services/firestore_service.dart';
+import 'package:flutter_application_2/services/data_service.dart';
 import 'package:flutter_application_2/widgets/charging_card_section.dart';
+
+import 'support/fake_api.dart';
 
 void main() {
   testWidgets('switching the connected vehicle updates its card stream', (
     tester,
   ) async {
-    final firestore = _SwitchableFirestoreService();
+    final firestore = _SwitchableDataService();
     addTearDown(firestore.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', firestoreService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
         ),
       ),
     );
@@ -37,12 +38,12 @@ void main() {
   testWidgets('registration lists all vehicles linked to the user', (
     tester,
   ) async {
-    final firestore = _SwitchableFirestoreService()..hasCard = false;
+    final firestore = _SwitchableDataService()..hasCard = false;
     addTearDown(firestore.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', firestoreService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
         ),
       ),
     );
@@ -63,12 +64,12 @@ void main() {
   testWidgets('registration sends only the last four card digits', (
     tester,
   ) async {
-    final firestore = _SwitchableFirestoreService()..hasCard = false;
+    final firestore = _SwitchableDataService()..hasCard = false;
     addTearDown(firestore.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', firestoreService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
         ),
       ),
     );
@@ -105,12 +106,12 @@ void main() {
   testWidgets('charging card section follows the currently connected vehicle', (
     tester,
   ) async {
-    final firestore = _SwitchableFirestoreService();
+    final firestore = _SwitchableDataService();
     addTearDown(firestore.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', firestoreService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
         ),
       ),
     );
@@ -136,12 +137,12 @@ void main() {
   testWidgets('hides a card whose stored vehicle details do not match', (
     tester,
   ) async {
-    final firestore = _SwitchableFirestoreService()..mismatchCard = true;
+    final firestore = _SwitchableDataService()..mismatchCard = true;
     addTearDown(firestore.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', firestoreService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
         ),
       ),
     );
@@ -166,8 +167,9 @@ Vehicle _vehicle(String id, String model) => Vehicle(
   isActive: true,
 );
 
-class _SwitchableFirestoreService extends FirestoreService {
-  _SwitchableFirestoreService() : super(firestore: FakeFirebaseFirestore());
+class _SwitchableDataService extends DataService {
+  // Every method the section uses is overridden, so no request is sent.
+  _SwitchableDataService() : super(api: FakeApi().client());
 
   final _connectedVehicle = StreamController<Vehicle?>.broadcast(sync: true);
   bool hasCard = true;
@@ -243,12 +245,6 @@ class _SwitchableFirestoreService extends FirestoreService {
       _vehicle(vehicleId, vehicleId == 'EV001' ? 'First EV' : 'Second EV'),
     );
   }
-
-  @override
-  Future<Map<String, dynamic>?> getLegacyChargingCardSummary({
-    required String uid,
-    required String vehicleId,
-  }) async => null;
 
   @override
   Stream<List<ChargingTransaction>> watchChargingTransactions(

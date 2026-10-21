@@ -10,7 +10,7 @@ import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../models/vehicle_health.dart';
 import '../models/vehicle_telemetry.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 import '../widgets/vehicle_ble_state_view.dart';
 import '../services/vehicle_model_load_bridge_stub.dart'
     if (dart.library.js_interop) '../services/vehicle_model_load_bridge_web.dart'
@@ -30,21 +30,21 @@ class VehicleHealthPage extends StatefulWidget {
   const VehicleHealthPage({
     super.key,
     required this.vehicle,
-    this.firestoreService,
+    this.dataService,
   });
 
   final Vehicle vehicle;
-  final FirestoreService? firestoreService;
+  final DataService? dataService;
 
   @override
   State<VehicleHealthPage> createState() => _VehicleHealthPageState();
 }
 
 class _VehicleHealthPageState extends State<VehicleHealthPage> {
-  late final FirestoreService _firestore =
-      widget.firestoreService ?? FirestoreService();
+  late final DataService _data =
+      widget.dataService ?? DataService();
   late final Stream<List<VehicleMaintenanceRecord>> _maintenanceStream =
-      _firestore.watchVehicleMaintenanceRecords(widget.vehicle.id);
+      _data.watchVehicleMaintenanceRecords(widget.vehicle.id);
 
   @override
   Widget build(BuildContext context) {

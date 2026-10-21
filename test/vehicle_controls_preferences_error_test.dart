@@ -1,36 +1,40 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_application_2/services/api/api_client.dart';
 import 'package:flutter_application_2/services/vehicle_controls_preferences_error.dart';
 
 void main() {
   group('vehicle controls preference errors', () {
-    test('explains scoped Firestore permission denial and offers retry', () {
+    test('explains a vehicle the account cannot access and offers retry', () {
       final message = vehicleControlsPreferencesErrorMessage(
-        FirebaseException(
-          plugin: 'cloud_firestore',
-          code: 'permission-denied',
+        const ApiException(
+          404,
+          'vehicle_not_found',
+          "You don't have access to this vehicle.",
         ),
       );
 
       expect(message, contains('signed-in account'));
-      expect(message, contains('active vehicle'));
-      expect(message, contains('rules are deployed'));
+      expect(message, contains('active'));
       expect(message, contains('No preferences were replaced'));
     });
 
     test('distinguishes an expired sign-in', () {
       expect(
         vehicleControlsPreferencesErrorMessage(
-          FirebaseException(plugin: 'cloud_firestore', code: 'unauthenticated'),
+          const ApiException(401, 'unauthenticated', 'Sign in to continue.'),
         ),
         contains('Sign in again'),
       );
     });
 
-    test('distinguishes retryable Firestore availability errors', () {
+    test('distinguishes retryable availability errors', () {
       expect(
         vehicleControlsPreferencesErrorMessage(
-          FirebaseException(plugin: 'cloud_firestore', code: 'unavailable'),
+          const ApiException(
+            0,
+            'timeout',
+            'Server is waking up, please try again.',
+          ),
         ),
         contains('temporarily unreachable'),
       );

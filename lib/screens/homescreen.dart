@@ -7,7 +7,7 @@ import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../services/distance_unit_service.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 import '../services/weather_service.dart';
 import '../widgets/vehicle_ble_state_view.dart';
 import '../widgets/weather_card.dart';
@@ -38,7 +38,7 @@ class _DashboardIdentity {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final FirestoreService firestoreService = FirestoreService();
+  final DataService dataService = DataService();
   final WeatherService weatherService = WeatherService();
   late Future<_DashboardIdentity> dashboardIdentity;
   StreamSubscription<Vehicle?>? _vehicleSubscription;
@@ -58,7 +58,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
     try {
-      final profile = await firestoreService.getUserProfile(uid);
+      final profile = await dataService.getUserProfile(uid);
       if (!mounted) return;
       setState(() {
         _distanceUnit = DistanceUnitService.normalize(profile?.distanceUnit);
@@ -79,7 +79,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) throw StateError('Please log in to load your dashboard.');
 
-    final profile = await firestoreService.getUserProfile(uid);
+    final profile = await dataService.getUserProfile(uid);
     final vehicleId = profile?.vehicleId;
     if (profile == null || vehicleId == null || vehicleId.isEmpty) {
       throw StateError(
@@ -93,7 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // Re-read authoritative identity from Firestore each time the dashboard opens.
-    final vehicle = await firestoreService.getVehicleById(vehicleId);
+    final vehicle = await dataService.getVehicleById(vehicleId);
     if (vehicle == null) {
       throw StateError(
         'Your registered vehicle is missing or inactive in Firestore.',
@@ -102,7 +102,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _vehicleSubscription?.cancel();
     _latestVehicle = vehicle;
     _vehicleStreamError = null;
-    _vehicleSubscription = firestoreService
+    _vehicleSubscription = dataService
         .watchVehicleById(vehicleId)
         .listen(
           (updatedVehicle) {
@@ -169,8 +169,8 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => LearnScreen(
-          vehicleStream: firestoreService.watchConnectedVehicle(uid),
-          assistant: FirebaseLearningAssistantService(),
+          vehicleStream: dataService.watchConnectedVehicle(uid),
+          assistant: ApiLearningAssistantService(),
           distanceUnit: _distanceUnit,
         ),
       ),

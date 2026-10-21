@@ -1,11 +1,11 @@
-import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
 import 'package:flutter_application_2/screens/vehicle_health_page.dart';
-import 'package:flutter_application_2/services/firestore_service.dart';
 import 'package:flutter_application_2/services/vehicle_ble_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
+
+import 'support/fake_api.dart';
 
 void main() {
   testWidgets('shows responsive health sections and opens component details', (
@@ -32,51 +32,33 @@ void main() {
       vin: 'TEST-VIN',
       batteryCapacityKwh: 60,
     );
-    final firestore = FakeFirebaseFirestore();
-    await firestore
-        .collection('vehicles')
-        .doc(vehicle.id)
-        .collection('telemetry')
-        .doc('live')
-        .set({
-          'battery': 72,
-          'range': 300,
-          'batteryHealth': 91,
-          'healthScore': 87,
-          'isCharging': false,
-          'batteryTemperatureC': 32,
-          'batteryAgeMonths': 28,
-          'chargingCycles': 284,
-          'motorHealth': 86,
-          'motorTemperatureC': 58,
-          'brakeHealth': 89,
-          'tirePressureFlPsi': 34,
-          'tirePressureFrPsi': 31,
-          'tirePressureRlPsi': 34,
-          'tirePressureRrPsi': 33,
-          'softwareHealth': 95,
-          'ecoScore': 87,
-          'efficiencyKmPerKwh': 6.3,
-          'regenerativeEnergyKwh': 6.8,
-          'hardBrakingEvents': 2,
-        });
-    await firestore
-        .collection('vehicles')
-        .doc(vehicle.id)
-        .collection('maintenance')
-        .add({
-          'serviceType': 'Brake inspection',
-          'serviceDate': DateTime(2026, 9, 12),
-          'nextServiceDate': DateTime(2026, 10, 15),
-          'status': 'Completed',
-        });
+    // The backend has no telemetry endpoint: live values come only from BLE.
+    final api = FakeApi()
+      ..on(
+        'GET /v1/vehicles/${vehicle.id}/maintenance',
+        (_) => {
+          'records': [
+            {
+              'id': 'r1',
+              'serviceType': 'Brake inspection',
+              'serviceDate': DateTime(2026, 9, 12).toUtc().toIso8601String(),
+              'nextServiceDate': DateTime(
+                2026,
+                10,
+                15,
+              ).toUtc().toIso8601String(),
+              'status': 'Completed',
+            },
+          ],
+        },
+      );
 
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData(platform: TargetPlatform.windows),
         home: VehicleHealthPage(
           vehicle: vehicle,
-          firestoreService: FirestoreService(firestore: firestore),
+          dataService: api.dataService(),
         ),
       ),
     );
@@ -121,25 +103,17 @@ void main() {
       ownerName: 'Driver',
       vin: 'TEST-VIN',
     );
-    final firestore = FakeFirebaseFirestore();
-    await firestore
-        .collection('vehicles')
-        .doc(vehicle.id)
-        .collection('telemetry')
-        .doc('live')
-        .set({
-          'battery': 50,
-          'range': 180,
-          'batteryHealth': 91,
-          'healthScore': 91,
-          'isCharging': false,
-        });
+    final api = FakeApi()
+      ..on(
+        'GET /v1/vehicles/${vehicle.id}/maintenance',
+        (_) => {'records': <Object>[]},
+      );
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData(platform: TargetPlatform.windows),
         home: VehicleHealthPage(
           vehicle: vehicle,
-          firestoreService: FirestoreService(firestore: firestore),
+          dataService: api.dataService(),
         ),
       ),
     );

@@ -7,7 +7,8 @@ import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../models/vehicle_controls.dart';
-import '../services/firestore_service.dart';
+import '../services/api/api_client.dart';
+import '../services/data_service.dart';
 import '../services/vehicle_ble_client.dart';
 import '../services/vehicle_controls_preferences_error.dart';
 
@@ -15,21 +16,28 @@ class VehicleControlsPage extends StatefulWidget {
   const VehicleControlsPage({
     super.key,
     required this.vehicle,
-    this.firestoreService,
+    this.dataService,
+    this.currentUid,
   });
 
   final Vehicle vehicle;
-  final FirestoreService? firestoreService;
+  final DataService? dataService;
+
+  /// The signed-in user's ID. Defaults to Firebase Auth; injectable for tests.
+  final String? Function()? currentUid;
 
   @override
   State<VehicleControlsPage> createState() => _VehicleControlsPageState();
 }
 
 class _VehicleControlsPageState extends State<VehicleControlsPage> {
-  late final FirestoreService _firestore =
-      widget.firestoreService ?? FirestoreService();
+  late final DataService _data =
+      widget.dataService ?? DataService();
   final VehicleBleClient _ble = VehicleBleClient.shared;
   late VehicleAlertEngine _alertEngine;
+
+  String? _currentUid() =>
+      widget.currentUid?.call() ?? FirebaseAuth.instance.currentUser?.uid;
 
   VehicleControlsPreferences _preferences = const VehicleControlsPreferences();
   bool _preferencesLoading = true;
@@ -60,8 +68,8 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
         _preferencesError = null;
       });
     }
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    final uid = _currentUid();
+    if (uid == null) {
       if (mounted) {
         setState(() {
           _preferencesLoading = false;
@@ -74,12 +82,12 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       return;
     }
     try {
-      final preferences = await _firestore.getVehicleControlsPreferences(
-        uid: user.uid,
+      final preferences = await _data.getVehicleControlsPreferences(
+        uid: uid,
         vehicleId: widget.vehicle.id,
       );
       if (!mounted) return;
-      if (FirebaseAuth.instance.currentUser?.uid != user.uid) {
+      if (_currentUid() != uid) {
         await _ble.disconnect();
         return;
       }
@@ -92,19 +100,10 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       );
       _onSnapshotChanged();
     } catch (error, stackTrace) {
-      final projectId = FirebaseAuth.instance.app.options.projectId;
-      if (error is FirebaseException) {
-        debugPrint(
-          '[Vehicle Controls] Preferences read failed '
-          'project=$projectId path=users/{uid}/vehicles/{vehicleId}/controls/preferences '
-          'code=${error.code}',
-        );
-      } else {
-        debugPrint(
-          '[Vehicle Controls] Preferences read failed '
-          'project=$projectId errorType=${error.runtimeType}',
-        );
-      }
+      debugPrint(
+        '[Vehicle Controls] Preferences read failed '
+        '${error is ApiException ? 'code=${error.code}' : 'errorType=${error.runtimeType}'}',
+      );
       debugPrintStack(stackTrace: stackTrace);
       if (!mounted) return;
       setState(() {
@@ -179,8 +178,8 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
   }
 
   Future<void> _savePreferences({bool showError = true}) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    final uid = _currentUid();
+    if (uid == null) {
       if (showError) _showMessage('Sign in again before saving preferences.');
       return;
     }
@@ -193,8 +192,8 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       final operation = _preferenceWriteQueue
           .catchError((Object _) {})
           .then(
-            (_) => _firestore.saveVehicleControlsPreferences(
-              uid: user.uid,
+            (_) => _data.saveVehicleControlsPreferences(
+              uid: uid,
               vehicleId: widget.vehicle.id,
               preferences: savedPreferences,
             ),
@@ -202,18 +201,10 @@ class _VehicleControlsPageState extends State<VehicleControlsPage> {
       _preferenceWriteQueue = operation;
       await operation;
     } catch (error) {
-      if (error is FirebaseException) {
-        debugPrint(
-          '[Vehicle Controls] Preference write failed '
-          'path=users/{uid}/vehicles/{vehicleId}/controls/preferences '
-          'code=${error.code}',
-        );
-      } else {
-        debugPrint(
-          '[Vehicle Controls] Preference write failed '
-          'errorType=${error.runtimeType}',
-        );
-      }
+      debugPrint(
+        '[Vehicle Controls] Preference write failed '
+        '${error is ApiException ? 'code=${error.code}' : 'errorType=${error.runtimeType}'}',
+      );
       if (!mounted) return;
       setState(
         () => _preferencesSaveError =

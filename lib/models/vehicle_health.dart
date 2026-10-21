@@ -1,5 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-
 import 'vehicle_telemetry.dart';
 
 enum VehicleHealthComponent { battery, motor, tires, brakes, software }
@@ -178,9 +176,10 @@ class VehicleMaintenanceRecord {
     return number != null && number.isFinite ? number : null;
   }
 
+  // The API sends ISO-8601 strings; show them in local time.
   static DateTime? _date(Object? value) => switch (value) {
-    Timestamp() => value.toDate(),
     DateTime() => value,
+    String() => DateTime.tryParse(value)?.toLocal(),
     _ => null,
   };
 }

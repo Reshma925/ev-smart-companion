@@ -1,9 +1,6 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-
 class ChargingCard {
   const ChargingCard({
     required this.id,
-    this.cardNumber,
     this.maskedCardNumber,
     this.cardType,
     this.cardHolderName,
@@ -22,7 +19,6 @@ class ChargingCard {
   });
 
   final String id;
-  final String? cardNumber;
   final String? maskedCardNumber;
   final String? cardType;
   final String? cardHolderName;
@@ -39,19 +35,12 @@ class ChargingCard {
   final double? lastRechargeAmount;
   final DateTime? lastRechargeDate;
 
+  /// Only the masked number or last four characters are ever stored.
   String? get displayCardNumber {
     final masked = maskedCardNumber;
     if (masked != null) return masked;
-    final number = cardNumber;
     final lastFour = cardLastFour;
-    if (number == null) {
-      return lastFour == null ? null : 'XXXX XXXX XXXX $lastFour';
-    }
-    final compact = number.replaceAll(RegExp(r'[\s-]'), '');
-    final visibleSuffix = compact.length <= 4
-        ? compact
-        : compact.substring(compact.length - 4);
-    return 'XXXX XXXX XXXX $visibleSuffix';
+    return lastFour == null ? null : 'XXXX XXXX XXXX $lastFour';
   }
 
   String? get linkedVehicleId => vehicleId;
@@ -59,7 +48,6 @@ class ChargingCard {
   factory ChargingCard.fromMap(Map<String, dynamic> map, {required String id}) {
     return ChargingCard(
       id: id,
-      cardNumber: _string(map['cardNumber']),
       maskedCardNumber: _string(map['maskedCardNumber']),
       cardType: _string(map['cardType']),
       cardHolderName: _string(map['cardHolderName']),
@@ -93,9 +81,8 @@ class ChargingCard {
   }
 
   static DateTime? _date(Object? value) {
-    if (value is Timestamp) return value.toDate();
     if (value is DateTime) return value;
-    if (value is String) return DateTime.tryParse(value);
+    if (value is String) return DateTime.tryParse(value)?.toLocal();
     return null;
   }
 }

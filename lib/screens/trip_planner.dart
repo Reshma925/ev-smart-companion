@@ -12,7 +12,7 @@ import '../models/trip_plan.dart';
 import '../models/vehicle.dart';
 import '../services/charging_station_service.dart';
 import '../services/distance_unit_service.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 import '../services/location_service.dart';
 import '../services/road_directions_service.dart';
 import '../services/trip_feasibility_service.dart';
@@ -37,7 +37,7 @@ class TripPlannerPage extends StatefulWidget {
 }
 
 class _TripPlannerPageState extends State<TripPlannerPage> {
-  final FirestoreService _firestore = FirestoreService();
+  final DataService _data = DataService();
   final LocationService _locationService = LocationService();
   final TripFeasibilityService _feasibility = const TripFeasibilityService();
   final RoadDirectionsService _directions = RoadDirectionsService();
@@ -173,7 +173,7 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
   Future<void> _changeVehicle(String uid, String vehicleId) async {
     _invalidatePlan(message: 'Vehicle changed. Plan the trip again.');
     try {
-      await _firestore.setConnectedVehicle(uid: uid, vehicleId: vehicleId);
+      await _data.setConnectedVehicle(uid: uid, vehicleId: vehicleId);
     } catch (error, stackTrace) {
       debugPrint(
         'Could not change the selected trip vehicle: $error\n$stackTrace',
@@ -242,7 +242,7 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Trip Planner')),
       body: StreamBuilder<List<Vehicle>>(
-        stream: _firestore.watchLinkedVehicles(uid),
+        stream: _data.watchLinkedVehicles(uid),
         builder: (context, vehiclesSnapshot) {
           if (vehiclesSnapshot.hasError) {
             return const Center(
@@ -254,7 +254,7 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
             return const Center(child: CircularProgressIndicator());
           }
           return StreamBuilder<Vehicle?>(
-            stream: _firestore.watchConnectedVehicle(uid),
+            stream: _data.watchConnectedVehicle(uid),
             builder: (context, vehicleSnapshot) {
               if (vehicleSnapshot.hasError) {
                 return const Center(

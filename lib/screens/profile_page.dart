@@ -1,7 +1,7 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
@@ -11,7 +11,7 @@ import '../models/user_model.dart';
 import '../models/vehicle.dart';
 import '../services/auth_service.dart';
 import '../services/distance_unit_service.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 import '../widgets/vehicle_ble_state_view.dart';
 import 'auth_gate.dart';
 import 'edit_profile_page.dart';
@@ -150,8 +150,7 @@ class _ProfileDetails extends StatefulWidget {
 
 class _ProfileDetailsState extends State<_ProfileDetails>
     with WidgetsBindingObserver {
-  final _firestore = FirestoreService();
-  final _storage = FirebaseStorage.instance;
+  final _data = DataService();
   final _picker = ImagePicker();
   late Stream<UserModel?> _profileStream;
   late Future<UserModel?> _initialProfile;
@@ -181,8 +180,8 @@ class _ProfileDetailsState extends State<_ProfileDetails>
   }
 
   void _subscribeToProfile() {
-    _profileStream = _firestore.watchUserProfile(widget.user.uid);
-    _initialProfile = _firestore
+    _profileStream = _data.watchUserProfile(widget.user.uid);
+    _initialProfile = _data
         .getUserProfile(widget.user.uid)
         .timeout(const Duration(seconds: 20));
   }
@@ -237,20 +236,13 @@ class _ProfileDetailsState extends State<_ProfileDetails>
         widget.onMessage('Choose a JPEG or PNG photo.');
         return;
       }
-      final fileExt = isPng ? 'png' : 'jpg';
-      final contentType = isPng ? 'image/png' : 'image/jpeg';
-      final ref = _storage.ref().child(
-        'users/${widget.user.uid}/profile_photo.$fileExt',
-      );
-      final uploadTask = ref.putData(
-        fileBytes,
-        SettableMetadata(contentType: contentType),
-      );
-      final snapshot = await uploadTask;
-      final url = await snapshot.ref.getDownloadURL();
-      await _firestore.updateUserProfile(
-        uid: widget.user.uid,
-        profileImageUrl: url,
+      if (fileBytes.length > 300 * 1024) {
+        widget.onMessage('Choose a smaller photo (at most 300 KB).');
+        return;
+      }
+      await _data.uploadProfilePhoto(
+        contentType: isPng ? 'image/png' : 'image/jpeg',
+        bytes: fileBytes,
       );
       if (mounted) {
         widget.onMessage('Profile photo updated.');
@@ -461,6 +453,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                       user: FirebaseAuth.instance.currentUser ?? widget.user,
                       profile: profile,
                       uploading: _uploadingPhoto,
+                    loadPhoto: _data.getProfilePhoto,
                       onEditProfile: () => _editProfile(profile),
                       onEditPhoto: _uploadProfilePhoto,
                     ),
@@ -477,7 +470,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                     _SectionHeader(title: 'My vehicle'),
                     const SizedBox(height: 12),
                     _VehicleShortcutCard(
-                      firestore: _firestore,
+                      firestore: _data,
                       vehicleId: profile.vehicleId,
                       onTap: () async {
                         if (profile.vehicleId == null ||
@@ -494,7 +487,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                           return;
                         }
                         final navContext = context;
-                        final linkedVehicle = await _firestore
+                        final linkedVehicle = await _data
                             .getVehicleRecordById(profile.vehicleId!);
                         if (!mounted) return;
                         if (linkedVehicle == null) {
@@ -528,7 +521,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                             ? 'All alerts'
                             : profile.notificationPreference,
                         onSelected: (value) async {
-                          await _firestore.updateUserProfile(
+                          await _data.updateUserProfile(
                             uid: widget.user.uid,
                             notificationPreference: value,
                           );
@@ -542,7 +535,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                           profile.distanceUnit,
                         ),
                         onSelected: (value) async {
-                          await _firestore.updateUserProfile(
+                          await _data.updateUserProfile(
                             uid: widget.user.uid,
                             distanceUnit: value,
                           );
@@ -578,7 +571,7 @@ class _VehicleShortcutCard extends StatelessWidget {
     required this.onTap,
   });
 
-  final FirestoreService firestore;
+  final DataService firestore;
   final String? vehicleId;
   final VoidCallback onTap;
 
@@ -875,6 +868,7 @@ class _ProfileHeader extends StatelessWidget {
     required this.user,
     required this.profile,
     required this.uploading,
+    required this.loadPhoto,
     required this.onEditProfile,
     required this.onEditPhoto,
   });
@@ -882,6 +876,7 @@ class _ProfileHeader extends StatelessWidget {
   final User user;
   final UserModel profile;
   final bool uploading;
+  final Future<Uint8List?> Function() loadPhoto;
   final VoidCallback onEditProfile;
   final VoidCallback onEditPhoto;
 
@@ -929,15 +924,10 @@ class _ProfileHeader extends StatelessWidget {
                           size: 64,
                           color: AppTheme.blue,
                         )
-                      : Image.network(
-                          imageUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              const Icon(
-                                Icons.person_rounded,
-                                size: 64,
-                                color: AppTheme.blue,
-                              ),
+                      : _ProfilePhoto(
+                          // The URL carries a version, so a new upload reloads.
+                          key: ValueKey(imageUrl),
+                          load: loadPhoto,
                         ),
                 ),
               ),
@@ -1148,7 +1138,7 @@ class _VehicleSummaryCard extends StatefulWidget {
     required this.distanceUnit,
   });
 
-  final FirestoreService firestore;
+  final DataService firestore;
   final String vehicleId;
   final String distanceUnit;
 
@@ -1596,4 +1586,39 @@ class _SignedOutView extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Loads the profile photo bytes through the authenticated API.
+class _ProfilePhoto extends StatefulWidget {
+  const _ProfilePhoto({super.key, required this.load});
+
+  final Future<Uint8List?> Function() load;
+
+  @override
+  State<_ProfilePhoto> createState() => _ProfilePhotoState();
+}
+
+class _ProfilePhotoState extends State<_ProfilePhoto> {
+  late final Future<Uint8List?> _bytes = widget.load();
+
+  @override
+  Widget build(BuildContext context) {
+    const placeholder = Icon(
+      Icons.person_rounded,
+      size: 64,
+      color: AppTheme.blue,
+    );
+    return FutureBuilder<Uint8List?>(
+      future: _bytes,
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes == null || bytes.isEmpty) return placeholder;
+        return Image.memory(
+          bytes,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) => placeholder,
+        );
+      },
+    );
+  }
 }

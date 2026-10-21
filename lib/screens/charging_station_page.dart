@@ -15,8 +15,9 @@ import '../models/road_route.dart';
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
 import '../services/charging_station_service.dart';
+import '../services/api/api_client.dart';
 import '../services/distance_unit_service.dart';
-import '../services/firestore_service.dart';
+import '../services/data_service.dart';
 import '../services/location_service.dart';
 import '../services/road_directions_service.dart';
 import '../services/vehicle_ble_client.dart';
@@ -30,7 +31,7 @@ class ChargingStationPage extends StatefulWidget {
 }
 
 class _ChargingStationPageState extends State<ChargingStationPage> {
-  final FirestoreService _firestoreService = FirestoreService();
+  final DataService _dataService = DataService();
   final LocationService _locationService = LocationService();
   final ChargingStationService _chargingService = ChargingStationService();
   final RoadDirectionsService _directionsService = RoadDirectionsService();
@@ -144,13 +145,13 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         throw StateError('Sign in to load your registered vehicle.');
       }
 
-      final profile = await _firestoreService.getUserProfile(uid);
+      final profile = await _dataService.getUserProfile(uid);
       final vehicleId = profile?.vehicleId;
       if (profile == null || vehicleId == null || vehicleId.isEmpty) {
         throw StateError('Your Firestore profile has no linked vehicle.');
       }
 
-      final vehicle = await _firestoreService.getVehicleById(vehicleId);
+      final vehicle = await _dataService.getVehicleById(vehicleId);
       if (vehicle == null) {
         throw StateError('Your registered vehicle could not be loaded.');
       }
@@ -168,7 +169,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         _updateRangeMessages();
       });
 
-      _vehicleSubscription = _firestoreService
+      _vehicleSubscription = _dataService
           .watchVehicleById(vehicle.id)
           .listen(
             _onVehicleUpdated,
@@ -181,7 +182,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
               });
             },
           );
-      _profileSubscription = _firestoreService
+      _profileSubscription = _dataService
           .watchUserProfile(uid)
           .listen(
             (updatedProfile) {
@@ -378,7 +379,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         height: MediaQuery.sizeOf(context).height * 0.82,
         child: ChargingCardSection(
           uid: uid,
-          firestoreService: _firestoreService,
+          dataService: _dataService,
         ),
       ),
     );
@@ -397,12 +398,12 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     if (uid == null) {
       throw StateError('Sign in to load vehicle information.');
     }
-    final profile = await _firestoreService.getUserProfile(uid);
+    final profile = await _dataService.getUserProfile(uid);
     final vehicleId = profile?.vehicleId;
     if (profile == null || vehicleId == null || vehicleId.isEmpty) {
       throw StateError('No vehicle is linked to this Firebase profile.');
     }
-    final vehicle = await _firestoreService.getVehicleById(vehicleId);
+    final vehicle = await _dataService.getVehicleById(vehicleId);
     if (vehicle == null) {
       throw StateError('The linked vehicle document is missing or inactive.');
     }
@@ -479,8 +480,8 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         _hasSearched = true;
         _stationMessage = error is StateError
             ? error.message.toString()
-            : error is FirebaseException
-            ? 'Could not refresh your vehicle or telemetry from Firebase. Check your connection and retry.'
+            : error is ApiException
+            ? 'Could not refresh your vehicle details. ${error.message}'
             : 'Charging-station data is temporarily unavailable. Check your connection and try again.';
       });
     }

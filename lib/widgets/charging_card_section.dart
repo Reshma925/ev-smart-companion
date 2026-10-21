@@ -2,37 +2,36 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_theme.dart';
 import '../models/charging_card.dart';
 import '../models/vehicle.dart';
-import '../services/firestore_service.dart';
+import '../services/api/api_client.dart';
+import '../services/data_service.dart';
 import '../services/paypal_web_checkout_bridge.dart';
 
 class ChargingCardSection extends StatelessWidget {
   const ChargingCardSection({
     required this.uid,
-    required this.firestoreService,
+    required this.dataService,
     super.key,
   });
 
   final String uid;
-  final FirestoreService firestoreService;
+  final DataService dataService;
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<Vehicle?>(
-      stream: firestoreService.watchConnectedVehicle(uid),
+      stream: dataService.watchConnectedVehicle(uid),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return const _CardMessage(
             icon: Icons.cloud_off_rounded,
             message:
-                'Connected vehicle data could not be loaded from Firebase.',
+                'Connected vehicle data could not be loaded. Check your connection and try again.',
           );
         }
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -43,13 +42,12 @@ class ChargingCardSection extends StatelessWidget {
         if (vehicle == null) {
           return const _CardMessage(
             icon: Icons.directions_car_filled_outlined,
-            message:
-                'No active connected vehicle is linked to this Firebase account.',
+            message: 'No active connected vehicle is linked to this account.',
           );
         }
         return StreamBuilder<ChargingCard?>(
           key: ValueKey(vehicle.id),
-          stream: firestoreService.watchChargingCard(
+          stream: dataService.watchChargingCard(
             uid,
             vehicleId: vehicle.id,
             vehicleModel: vehicle.model,
@@ -60,7 +58,7 @@ class ChargingCardSection extends StatelessWidget {
               return const _CardMessage(
                 icon: Icons.cloud_off_rounded,
                 message:
-                    'Charging card data could not be loaded from Firebase.',
+                    'Charging card data could not be loaded. Check your connection and try again.',
               );
             }
             if (cardSnapshot.connectionState == ConnectionState.waiting) {
@@ -104,143 +102,139 @@ class ChargingCardSection extends StatelessWidget {
       icon: const Icon(Icons.add_card_rounded),
       label: const Text('Register Charging Card'),
     );
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Text(
-            'MY CHARGING CARD',
-            style: TextStyle(
-              color: AppTheme.navy,
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(height: 16),
-          _ConnectedVehicleSelector(
-            uid: uid,
-            vehicle: vehicle,
-            firestoreService: firestoreService,
-          ),
-          const SizedBox(height: 12),
-          if (card == null) ...[
-            _LegacyCardMigration(
-              key: ValueKey(vehicle.id),
-              uid: uid,
-              vehicle: vehicle,
-              firestoreService: firestoreService,
-              onRegister: () => registerButton,
-              onNoLegacyCard: () => Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const _CardMessage(
-                    icon: Icons.credit_card_off_rounded,
-                    message: 'No charging card registered for this vehicle.',
-                  ),
-                  const SizedBox(height: 14),
-                  registerButton,
-                ],
-              ),
-            ),
-          ] else ...[
-            _ChargingCardVisual(card: card),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'CARD DETAILS',
-                    style: TextStyle(
-                      color: AppTheme.navy,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: () => _openCardForm(context, vehicle, card: card),
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  label: const Text('Edit'),
-                ),
-              ],
-            ),
-            _CardValue(
-              label: 'Card type',
-              value: card.cardType ?? 'Not available',
-            ),
-            _CardValue(
-              label: 'Card number',
-              value: card.displayCardNumber ?? 'Not available',
-            ),
-            _CardValue(
-              label: 'Card holder',
-              value: card.cardHolderName ?? 'Not available',
-            ),
-            _CardValue(
-              label: 'Vehicle',
-              value:
-                  '${card.vehicleModel}\n${card.vehicleRegistrationNumber}\n${card.vehicleId}',
-            ),
-            _CardValue(label: 'VIN', value: card.vehicleVin ?? 'Not available'),
-            _CardValue(
-              label: 'Currency',
-              value: card.currency ?? 'Not available',
-            ),
-            _CardStatus(value: card.status ?? 'Not available'),
-            _CardValue(
-              label: 'Last recharge',
-              value: card.lastRechargeAmount == null
-                  ? 'Not available'
-                  : _formatMoney(card.lastRechargeAmount!, card.currency),
-            ),
-            _CardValue(
-              label: 'Last recharge date',
-              value: card.lastRechargeDate == null
-                  ? 'Not available'
-                  : _dateLabel(card.lastRechargeDate!),
-            ),
-            _CardValue(
-              label: 'Expiry',
-              value: card.expiryDate == null
-                  ? 'Not available'
-                  : _dateLabel(card.expiryDate!),
-            ),
-            _CardValue(
-              label: 'Registered',
-              value: card.registeredAt == null
-                  ? 'Not available'
-                  : _dateLabel(card.registeredAt!),
-            ),
-            const SizedBox(height: 12),
+    return RefreshIndicator(
+      onRefresh: dataService.refresh,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
             const Text(
-              'TRANSACTION HISTORY',
+              'MY CHARGING CARD',
               style: TextStyle(
                 color: AppTheme.navy,
-                fontSize: 17,
+                fontSize: 20,
                 fontWeight: FontWeight.w800,
               ),
             ),
-            const SizedBox(height: 10),
-            _RecentTransactionSummary(
+            const SizedBox(height: 16),
+            _ConnectedVehicleSelector(
               uid: uid,
-              vehicleId: vehicle.id,
-              firestoreService: firestoreService,
+              vehicle: vehicle,
+              dataService: dataService,
+            ),
+            const SizedBox(height: 12),
+            if (card == null) ...[
+              const _CardMessage(
+                icon: Icons.credit_card_off_rounded,
+                message: 'No charging card registered for this vehicle.',
+              ),
+              const SizedBox(height: 14),
+              registerButton,
+            ] else ...[
+              _ChargingCardVisual(card: card),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'CARD DETAILS',
+                      style: TextStyle(
+                        color: AppTheme.navy,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () =>
+                        _openCardForm(context, vehicle, card: card),
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    label: const Text('Edit'),
+                  ),
+                ],
+              ),
+              _CardValue(
+                label: 'Card type',
+                value: card.cardType ?? 'Not available',
+              ),
+              _CardValue(
+                label: 'Card number',
+                value: card.displayCardNumber ?? 'Not available',
+              ),
+              _CardValue(
+                label: 'Card holder',
+                value: card.cardHolderName ?? 'Not available',
+              ),
+              _CardValue(
+                label: 'Vehicle',
+                value:
+                    '${card.vehicleModel}\n${card.vehicleRegistrationNumber}\n${card.vehicleId}',
+              ),
+              _CardValue(
+                label: 'VIN',
+                value: card.vehicleVin ?? 'Not available',
+              ),
+              _CardValue(
+                label: 'Currency',
+                value: card.currency ?? 'Not available',
+              ),
+              _CardStatus(value: card.status ?? 'Not available'),
+              _CardValue(
+                label: 'Last recharge',
+                value: card.lastRechargeAmount == null
+                    ? 'Not available'
+                    : _formatMoney(card.lastRechargeAmount!, card.currency),
+              ),
+              _CardValue(
+                label: 'Last recharge date',
+                value: card.lastRechargeDate == null
+                    ? 'Not available'
+                    : _dateLabel(card.lastRechargeDate!),
+              ),
+              _CardValue(
+                label: 'Expiry',
+                value: card.expiryDate == null
+                    ? 'Not available'
+                    : _dateLabel(card.expiryDate!),
+              ),
+              _CardValue(
+                label: 'Registered',
+                value: card.registeredAt == null
+                    ? 'Not available'
+                    : _dateLabel(card.registeredAt!),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'TRANSACTION HISTORY',
+                style: TextStyle(
+                  color: AppTheme.navy,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _RecentTransactionSummary(
+                uid: uid,
+                vehicleId: vehicle.id,
+                dataService: dataService,
+              ),
+            ],
+            const SizedBox(height: 18),
+            OutlinedButton.icon(
+              onPressed: () => _showRechargeMessage(context, vehicle),
+              icon: const Icon(Icons.add_card_rounded),
+              label: const Text('Recharge'),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.tonalIcon(
+              onPressed: () => _showTransactionHistory(context, vehicle.id),
+              icon: const Icon(Icons.receipt_long_rounded),
+              label: const Text('Transaction History'),
             ),
           ],
-          const SizedBox(height: 18),
-          OutlinedButton.icon(
-            onPressed: () => _showRechargeMessage(context, vehicle),
-            icon: const Icon(Icons.add_card_rounded),
-            label: const Text('Recharge'),
-          ),
-          const SizedBox(height: 10),
-          FilledButton.tonalIcon(
-            onPressed: () => _showTransactionHistory(context, vehicle.id),
-            icon: const Icon(Icons.receipt_long_rounded),
-            label: const Text('Transaction History'),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -262,7 +256,7 @@ class ChargingCardSection extends StatelessWidget {
         ),
         child: _ChargingCardForm(
           uid: uid,
-          firestoreService: firestoreService,
+          dataService: dataService,
           connectedVehicle: vehicle,
           existingCard: card,
         ),
@@ -272,7 +266,7 @@ class ChargingCardSection extends StatelessWidget {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Charging card details saved in Firebase for vehicle $savedVehicleId.',
+            'Charging card details saved for vehicle $savedVehicleId.',
           ),
         ),
       );
@@ -285,8 +279,8 @@ class ChargingCardSection extends StatelessWidget {
       builder: (dialogContext) => _RechargeDialog(
         uid: uid,
         vehicle: vehicle,
-        firestoreService: firestoreService,
-        currentBalance: firestoreService
+        dataService: dataService,
+        currentBalance: dataService
             .getChargingCard(uid, vehicleId: vehicle.id)
             .then((card) => card?.balance ?? 0),
       ),
@@ -305,7 +299,7 @@ class ChargingCardSection extends StatelessWidget {
         child: _TransactionHistory(
           uid: uid,
           vehicleId: vehicleId,
-          firestoreService: firestoreService,
+          dataService: dataService,
         ),
       ),
     );
@@ -316,12 +310,12 @@ class _ConnectedVehicleSelector extends StatefulWidget {
   const _ConnectedVehicleSelector({
     required this.uid,
     required this.vehicle,
-    required this.firestoreService,
+    required this.dataService,
   });
 
   final String uid;
   final Vehicle vehicle;
-  final FirestoreService firestoreService;
+  final DataService dataService;
 
   @override
   State<_ConnectedVehicleSelector> createState() =>
@@ -336,7 +330,7 @@ class _ConnectedVehicleSelectorState extends State<_ConnectedVehicleSelector> {
   @override
   void initState() {
     super.initState();
-    _vehicles = widget.firestoreService.watchLinkedVehicles(widget.uid);
+    _vehicles = widget.dataService.watchLinkedVehicles(widget.uid);
   }
 
   Future<void> _selectVehicle(String vehicleId) async {
@@ -346,7 +340,7 @@ class _ConnectedVehicleSelectorState extends State<_ConnectedVehicleSelector> {
       _error = null;
     });
     try {
-      await widget.firestoreService.setConnectedVehicle(
+      await widget.dataService.setConnectedVehicle(
         uid: widget.uid,
         vehicleId: vehicleId,
       );
@@ -354,9 +348,7 @@ class _ConnectedVehicleSelectorState extends State<_ConnectedVehicleSelector> {
       debugPrint('Could not switch connected vehicle: $error\n$stackTrace');
       if (mounted) {
         setState(() {
-          _error = error is FirebaseFunctionsException
-              ? error.message ?? error.code
-              : error.toString();
+          _error = error.toString();
         });
       }
     } finally {
@@ -419,155 +411,16 @@ class _ConnectedVehicleSelectorState extends State<_ConnectedVehicleSelector> {
   );
 }
 
-class _LegacyCardMigration extends StatefulWidget {
-  const _LegacyCardMigration({
-    super.key,
-    required this.uid,
-    required this.vehicle,
-    required this.firestoreService,
-    required this.onRegister,
-    required this.onNoLegacyCard,
-  });
-
-  final String uid;
-  final Vehicle vehicle;
-  final FirestoreService firestoreService;
-  final Widget Function() onRegister;
-  final Widget Function() onNoLegacyCard;
-
-  @override
-  State<_LegacyCardMigration> createState() => _LegacyCardMigrationState();
-}
-
-class _LegacyCardMigrationState extends State<_LegacyCardMigration> {
-  bool _migrating = false;
-  String? _error;
-  late Future<Map<String, dynamic>?> _legacyCardSummary;
-
-  @override
-  void initState() {
-    super.initState();
-    _legacyCardSummary = _loadLegacyCardSummary();
-  }
-
-  Future<Map<String, dynamic>?> _loadLegacyCardSummary() =>
-      widget.firestoreService.getLegacyChargingCardSummary(
-        uid: widget.uid,
-        vehicleId: widget.vehicle.id,
-      );
-
-  Future<void> _migrate() async {
-    if (_migrating) return;
-    setState(() {
-      _migrating = true;
-      _error = null;
-    });
-    try {
-      await widget.firestoreService.migrateLegacyChargingCard(
-        uid: widget.uid,
-        vehicleId: widget.vehicle.id,
-      );
-    } catch (error, stackTrace) {
-      debugPrint('Could not migrate legacy charging card: $error\n$stackTrace');
-      if (mounted) {
-        setState(() {
-          _migrating = false;
-          _error = error is FirebaseFunctionsException
-              ? error.message
-              : error.toString();
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<Map<String, dynamic>?>(
-      future: _legacyCardSummary,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const _CardMessage(
-                icon: Icons.cloud_off_rounded,
-                message:
-                    'Legacy card status could not be checked. Registration remains protected by Firestore rules.',
-              ),
-              const SizedBox(height: 14),
-              widget.onRegister(),
-            ],
-          );
-        }
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final legacyCard = snapshot.data;
-        if (legacyCard == null) return widget.onNoLegacyCard();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const _CardMessage(
-              icon: Icons.sync_rounded,
-              message:
-                  'A card from the previous account-level structure was found. Migration copies only masked card details to the connected vehicle and keeps the original data unchanged.',
-            ),
-            if (legacyCard['cardType'] is String)
-              _CardValue(
-                label: 'Card type',
-                value: legacyCard['cardType'] as String,
-              ),
-            if (legacyCard['maskedCardNumber'] is String)
-              _CardValue(
-                label: 'Card number',
-                value: legacyCard['maskedCardNumber'] as String,
-              ),
-            if (legacyCard['cardHolderName'] is String)
-              _CardValue(
-                label: 'Card holder',
-                value: legacyCard['cardHolderName'] as String,
-              ),
-            if (legacyCard['balance'] is num)
-              _CardValue(
-                label: 'Available balance',
-                value: _formatMoney(
-                  (legacyCard['balance'] as num).toDouble(),
-                  legacyCard['currency'] as String?,
-                ),
-              ),
-            const SizedBox(height: 10),
-            FilledButton.icon(
-              onPressed: _migrating ? null : _migrate,
-              icon: _migrating
-                  ? const SizedBox(
-                      height: 18,
-                      width: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.move_down_rounded),
-              label: const Text('Migrate Card to Connected Vehicle'),
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 8),
-              Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-            ],
-          ],
-        );
-      },
-    );
-  }
-}
-
 class _ChargingCardForm extends StatefulWidget {
   const _ChargingCardForm({
     required this.uid,
-    required this.firestoreService,
+    required this.dataService,
     required this.connectedVehicle,
     this.existingCard,
   });
 
   final String uid;
-  final FirestoreService firestoreService;
+  final DataService dataService;
   final Vehicle connectedVehicle;
   final ChargingCard? existingCard;
 
@@ -595,9 +448,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
     _holderController = TextEditingController(text: card?.cardHolderName ?? '');
     _expiryDate = card?.expiryDate;
     _selectedVehicleId = widget.connectedVehicle.id;
-    _linkedVehiclesStream = widget.firestoreService.watchLinkedVehicles(
-      widget.uid,
-    );
+    _linkedVehiclesStream = widget.dataService.watchLinkedVehicles(widget.uid);
   }
 
   @override
@@ -668,7 +519,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
     try {
       if (widget.existingCard == null) {
         debugPrint('[CARD PROD DEBUG] Calling registerChargingCard()');
-        await widget.firestoreService.registerChargingCard(
+        await widget.dataService.registerChargingCard(
           uid: widget.uid,
           cardType: _typeController.text,
           cardLastFour: cardLastFour ?? '',
@@ -677,7 +528,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
           expiryDate: _expiryDate,
         );
       } else {
-        await widget.firestoreService.updateChargingCardDetails(
+        await widget.dataService.updateChargingCardDetails(
           uid: widget.uid,
           cardType: _typeController.text,
           cardLastFour: cardLastFour,
@@ -687,7 +538,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
         );
       }
       if (vehicleId != widget.connectedVehicle.id) {
-        await widget.firestoreService.setConnectedVehicle(
+        await widget.dataService.setConnectedVehicle(
           uid: widget.uid,
           vehicleId: vehicleId,
         );
@@ -707,8 +558,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
             'Invalid argument(s): ',
             '',
           ),
-          FirebaseException firebaseError =>
-            'Firebase ${firebaseError.code}: ${firebaseError.message ?? 'Charging-card details could not be saved.'}',
+          ApiException apiError => apiError.message,
           _ => 'Charging-card details could not be saved. $error',
         };
       });
@@ -871,7 +721,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
             if (!isEditing) ...[
               const SizedBox(height: 10),
               Text(
-                'New cards start with a Firebase balance of ${_currency(0, 'INR')}.',
+                'New cards start with a balance of ${_currency(0, 'INR')}.',
                 style: const TextStyle(color: AppTheme.mutedBlue, fontSize: 12),
               ),
             ],
@@ -904,13 +754,13 @@ class _RechargeDialog extends StatefulWidget {
   const _RechargeDialog({
     required this.uid,
     required this.vehicle,
-    required this.firestoreService,
+    required this.dataService,
     required this.currentBalance,
   });
 
   final String uid;
   final Vehicle vehicle;
-  final FirestoreService firestoreService;
+  final DataService dataService;
   final Future<double> currentBalance;
 
   @override
@@ -1005,7 +855,7 @@ class _RechargeDialogState extends State<_RechargeDialog> {
     });
     try {
       debugPrint('[PayPal Recharge] Calling createPayPalRechargeOrder');
-      final response = await widget.firestoreService.createPayPalRechargeOrder(
+      final response = await widget.dataService.createPayPalRechargeOrder(
         uid: widget.uid,
         vehicleId: widget.vehicle.id,
         amount: _selectedAmount,
@@ -1064,9 +914,7 @@ class _RechargeDialogState extends State<_RechargeDialog> {
       setState(() {
         _processing = false;
         _statusMessage = 'Payment failed.';
-        _error = error is FirebaseFunctionsException
-            ? error.message ?? error.code
-            : error.toString();
+        _error = error.toString();
       });
     }
   }
@@ -1134,7 +982,7 @@ class _RechargeDialogState extends State<_RechargeDialog> {
     });
     try {
       debugPrint('[PayPal Recharge] Calling capturePayPalRechargeOrder');
-      final capture = await widget.firestoreService.capturePayPalRechargeOrder(
+      final capture = await widget.dataService.capturePayPalRechargeOrder(
         uid: widget.uid,
         vehicleId: widget.vehicle.id,
         orderId: approvedOrderId ?? orderId,
@@ -1158,9 +1006,7 @@ class _RechargeDialogState extends State<_RechargeDialog> {
       setState(() {
         _processing = false;
         _statusMessage = 'Payment failed.';
-        _error = error is FirebaseFunctionsException
-            ? error.message ?? error.code
-            : error.toString();
+        _error = error.toString();
       });
     }
   }
@@ -1464,20 +1310,17 @@ class _RecentTransactionSummary extends StatelessWidget {
   const _RecentTransactionSummary({
     required this.uid,
     required this.vehicleId,
-    required this.firestoreService,
+    required this.dataService,
   });
 
   final String uid;
   final String vehicleId;
-  final FirestoreService firestoreService;
+  final DataService dataService;
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<ChargingTransaction>>(
-      stream: firestoreService.watchChargingTransactions(
-        uid,
-        vehicleId: vehicleId,
-      ),
+      stream: dataService.watchChargingTransactions(uid, vehicleId: vehicleId),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return const _CardMessage(
@@ -1728,12 +1571,12 @@ class _TransactionHistory extends StatelessWidget {
   const _TransactionHistory({
     required this.uid,
     required this.vehicleId,
-    required this.firestoreService,
+    required this.dataService,
   });
 
   final String uid;
   final String vehicleId;
-  final FirestoreService firestoreService;
+  final DataService dataService;
 
   @override
   Widget build(BuildContext context) {
@@ -1753,7 +1596,7 @@ class _TransactionHistory extends StatelessWidget {
           const SizedBox(height: 12),
           Expanded(
             child: StreamBuilder<List<ChargingTransaction>>(
-              stream: firestoreService.watchChargingTransactions(
+              stream: dataService.watchChargingTransactions(
                 uid,
                 vehicleId: vehicleId,
               ),
@@ -1762,7 +1605,7 @@ class _TransactionHistory extends StatelessWidget {
                   return const _CardMessage(
                     icon: Icons.cloud_off_rounded,
                     message:
-                        'Transaction history could not be loaded from Firebase.',
+                        'Transaction history could not be loaded. Check your connection and try again.',
                   );
                 }
                 if (snapshot.connectionState == ConnectionState.waiting) {

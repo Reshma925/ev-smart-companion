@@ -1,5 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-
 class VehicleData {
   const VehicleData({
     required this.battery,
@@ -199,8 +197,8 @@ class VehicleData {
   }
 
   static DateTime? _readDate(Object? value) {
-    if (value is Timestamp) return value.toDate();
     if (value is DateTime) return value;
+    if (value is String) return DateTime.tryParse(value)?.toLocal();
     return null;
   }
 }

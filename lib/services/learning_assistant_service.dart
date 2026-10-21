@@ -1,10 +1,10 @@
 import 'dart:convert';
 
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../models/vehicle.dart';
+import 'api/api_client.dart';
 
 class LearningVehicleContext {
   const LearningVehicleContext({
@@ -40,11 +40,10 @@ abstract interface class EvLearningAssistant {
   });
 }
 
-class FirebaseLearningAssistantService implements EvLearningAssistant {
-  FirebaseLearningAssistantService({FirebaseFunctions? functions})
-    : _functions = functions ?? FirebaseFunctions.instance;
+class ApiLearningAssistantService implements EvLearningAssistant {
+  ApiLearningAssistantService({ApiClient? api}) : _api = api ?? ApiClient();
 
-  final FirebaseFunctions _functions;
+  final ApiClient _api;
 
   @override
   Future<String> ask(
@@ -63,83 +62,42 @@ class FirebaseLearningAssistantService implements EvLearningAssistant {
       );
     }
 
+    final contextData = context.toMap();
+    final Object? data;
     try {
-      debugPrint('[AI DEBUG] Request started');
-      debugPrint('[AI DEBUG] Provider: Google Gemini via Firebase callable');
-      debugPrint('[AI DEBUG] Callable: askEvLearningAssistant');
-      debugPrint('[AI DEBUG] Request model: gemini-flash-latest');
-      final callable = _functions.httpsCallable('askEvLearningAssistant');
-      final contextData = context.toMap();
-      final requestData = <String, Object>{
+      data = await _api.post('/v1/assistant/ask', {
         'message': normalizedQuestion,
         'topic': 'EV learning',
         if (contextData.isNotEmpty) 'context': jsonEncode(contextData),
-      };
-      final request = callable.call(requestData);
-      debugPrint('[AI DEBUG] Request started successfully');
-      final result = await request.timeout(const Duration(seconds: 40));
-      debugPrint('[AI DEBUG] HTTP status: not exposed by Firebase callable');
-      debugPrint('[AI DEBUG] Response received');
-      debugPrint('[AI DEBUG] Response parsing started');
-      final data = result.data;
-      if (data is! Map ||
-          data['success'] != true ||
-          data['answer'] is! String) {
-        final error = const LearningAssistantException(
-          'The EV assistant returned an invalid response. Please try again.',
-        );
-        _logError(error, httpStatus: 'not exposed by Firebase callable');
-        throw error;
+      });
+    } on ApiException catch (error) {
+      debugPrint('[AI ERROR] Assistant request failed: ${error.code}');
+      if (error.statusCode == 400 || error.statusCode == 429) {
+        throw LearningAssistantException(error.message);
       }
-      final answer = (data['answer'] as String).trim();
-      if (answer.isEmpty) {
-        final error = const LearningAssistantException(
-          'The EV assistant did not return an answer. Please try again.',
-        );
-        _logError(error, httpStatus: 'not exposed by Firebase callable');
-        throw error;
-      }
-      debugPrint('[AI DEBUG] Response parsing succeeded');
-      return answer;
-    } on LearningAssistantException {
-      rethrow;
-    } on FirebaseFunctionsException catch (error, stackTrace) {
-      _logError(
-        error,
-        httpStatus:
-            'not exposed by Firebase callable; Firebase code=${error.code}',
-        stackTrace: stackTrace,
-      );
-      if (error.code == 'invalid-argument') {
-        throw LearningAssistantException(
-          error.message ?? 'Check your question and try again.',
-        );
-      }
+      if (error.statusCode == 0) throw LearningAssistantException(error.message);
       throw const LearningAssistantException(
         'AI assistant is temporarily unavailable. Please try again.',
       );
-    } catch (error, stackTrace) {
-      _logError(
-        error,
-        httpStatus: 'not exposed by Firebase callable',
-        stackTrace: stackTrace,
-      );
+    } catch (error) {
+      debugPrint('[AI ERROR] Assistant request failed: ${error.runtimeType}');
       throw const LearningAssistantException(
         'AI assistant is temporarily unavailable. Please try again.',
       );
     }
-  }
 
-  void _logError(
-    Object error, {
-    required String httpStatus,
-    StackTrace? stackTrace,
-  }) {
-    debugPrint('[AI ERROR] Type: ${error.runtimeType}');
-    debugPrint('[AI ERROR] Message: $error');
-    debugPrint('[AI ERROR] HTTP status: $httpStatus');
-    debugPrint('[AI ERROR] Response body: not exposed by Firebase callable');
-    debugPrint('[AI ERROR] Stack trace: ${stackTrace ?? StackTrace.current}');
+    if (data is! Map || data['success'] != true || data['answer'] is! String) {
+      throw const LearningAssistantException(
+        'The EV assistant returned an invalid response. Please try again.',
+      );
+    }
+    final answer = (data['answer'] as String).trim();
+    if (answer.isEmpty) {
+      throw const LearningAssistantException(
+        'The EV assistant did not return an answer. Please try again.',
+      );
+    }
+    return answer;
   }
 }
 

@@ -1,18 +1,23 @@
 # PayPal checkout by platform
 
-PayPal order creation and capture remain authenticated Firebase callable
-operations. The backend validates the INR recharge, calculates the fixed
-DEMO-only INR-to-USD Sandbox amount, verifies PayPal's completed capture, and
-credits the INR amount once. The browser receives only the public PayPal client
-ID; no PayPal secret or OAuth token is sent to Flutter.
+PayPal order creation and capture are authenticated calls to the backend
+(`backend/`): `POST /v1/vehicles/{vehicleId}/charging-card/paypal-orders`
+with `{ "amountInr": 100 }`, then
+`POST /v1/vehicles/{vehicleId}/charging-card/paypal-orders/{orderId}/capture`.
+The backend validates the INR recharge (at most ₹10,000, two decimals),
+calculates the fixed DEMO-only INR-to-USD Sandbox amount
+(`DEMO_EXCHANGE_RATE_INR_TO_USD`), verifies PayPal's completed capture, and
+credits the INR amount once in a MongoDB transaction; capturing the same order
+again returns the original result without a second credit. The app receives
+only the order ID, approval URL and the public PayPal client ID; the PayPal
+secret and OAuth token stay in `backend/.env`.
 
 ## Web
 
 Flutter Web uses PayPal's official JavaScript SDK v6 Sandbox core and one-time
 payment session. The PayPal checkout opens in the SDK-supported popup, leaving
-the recharge screen in place. Its approval callback invokes the existing
-`capturePayPalRechargeOrder` callable; only a successful backend capture marks
-the recharge successful. The app does not embed PayPal login in a WebView.
+the recharge screen in place. Its approval callback calls the backend capture
+endpoint; only a successful backend capture marks the recharge successful. The app does not embed PayPal login in a WebView.
 
 ## Android and iOS
 
