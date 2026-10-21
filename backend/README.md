@@ -1,0 +1,42 @@
+# EV Smart Companion backend
+
+Node.js + TypeScript + Express API backed by MongoDB Atlas. The Flutter app
+signs in with Firebase Authentication and sends the Firebase ID token as
+`Authorization: Bearer <token>`; this server verifies it and serves profile,
+vehicle, maintenance, controls-preference, charging-card, PayPal and learning
+assistant data.
+
+Live vehicle measurements are **not** stored or served here. They come only
+from the BLE simulator.
+
+## Setup
+
+1. Install Node.js 22 or newer.
+2. `cd backend` then `npm install`.
+3. Copy `.env.example` to `.env` and fill in every `REPLACE_ME`. Never commit `.env`.
+4. `npm run check-env` prints `present` or `missing` for each variable (never the values).
+
+## Commands
+
+| Command             | What it does                                        |
+| ------------------- | --------------------------------------------------- |
+| `npm run dev`       | Start the API on http://localhost:8081 with reload  |
+| `npm run build`     | Compile TypeScript to `dist/`                       |
+| `npm start`         | Run the compiled server (used on Render)            |
+| `npm test`          | Run tests against an in-memory MongoDB replica set  |
+| `npm run lint`      | ESLint                                              |
+| `npm run typecheck` | TypeScript type check, including tests              |
+| `npm run format`    | Prettier                                            |
+| `npm run check-env` | Check that every environment variable is set        |
+| `npm run seed`      | Insert or update the demo vehicles (safe to re-run) |
+
+`GET /health` returns `{"status":"ok"}` without auth or database access. Every
+route under `/v1` requires a valid Firebase ID token.
+
+## Troubleshooting
+
+- `bad auth : authentication failed`: the username or password in `MONGODB_URI`
+  does not match a user in Atlas → Security → Database Access.
+- `MongoServerSelectionError` / timeout: add your IP in Atlas → Network Access,
+  or URL-encode special characters in the password (`@`→`%40`, `#`→`%23`,
+  `/`→`%2F`, `:`→`%3A`).
