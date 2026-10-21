@@ -207,7 +207,8 @@ class _ProfileDetailsState extends State<_ProfileDetails>
       picked = await _picker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 85,
-        maxWidth: 1600,
+        maxWidth: 512,
+        maxHeight: 512,
       );
     } catch (_) {
       if (mounted) {
@@ -220,11 +221,24 @@ class _ProfileDetailsState extends State<_ProfileDetails>
     setState(() => _uploadingPhoto = true);
     try {
       final fileBytes = await picked.readAsBytes();
-      final extension = picked.name.split('.').last.toLowerCase();
-      final fileExt = const {'jpg', 'jpeg', 'png', 'webp'}.contains(extension)
-          ? extension
-          : 'jpg';
-      final contentType = fileExt == 'jpg' ? 'image/jpeg' : 'image/$fileExt';
+      // Trust the file's first bytes, not its name: only JPEG and PNG.
+      final isJpeg =
+          fileBytes.length > 3 &&
+          fileBytes[0] == 0xFF &&
+          fileBytes[1] == 0xD8 &&
+          fileBytes[2] == 0xFF;
+      final isPng =
+          fileBytes.length > 8 &&
+          fileBytes[0] == 0x89 &&
+          fileBytes[1] == 0x50 &&
+          fileBytes[2] == 0x4E &&
+          fileBytes[3] == 0x47;
+      if (!isJpeg && !isPng) {
+        widget.onMessage('Choose a JPEG or PNG photo.');
+        return;
+      }
+      final fileExt = isPng ? 'png' : 'jpg';
+      final contentType = isPng ? 'image/png' : 'image/jpeg';
       final ref = _storage.ref().child(
         'users/${widget.user.uid}/profile_photo.$fileExt',
       );

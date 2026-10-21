@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import '../app_theme.dart';
@@ -87,6 +88,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: typeController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(80)],
                       decoration: const InputDecoration(
                         labelText: 'Service performed',
                         hintText: 'e.g. Tire rotation',
@@ -129,6 +131,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: odometerController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(9)],
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
@@ -143,6 +146,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: costController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(10)],
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
@@ -155,6 +159,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: centerController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(120)],
                       decoration: const InputDecoration(
                         labelText: 'Service center (optional)',
                       ),
@@ -162,6 +167,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: notesController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(1000)],
                       minLines: 2,
                       maxLines: 4,
                       decoration: const InputDecoration(

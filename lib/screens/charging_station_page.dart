@@ -708,8 +708,10 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   }
 
   Future<void> _launchWebsite(String website) async {
-    final uri = Uri.tryParse(website);
-    if (uri == null || !uri.hasScheme) {
+    // Station websites come from OpenStreetMap data, so only open https links.
+    var uri = Uri.tryParse(website.trim());
+    if (uri != null && uri.scheme == 'http') uri = uri.replace(scheme: 'https');
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
       _showMessage('This station has an invalid website link.');
       return;
     }

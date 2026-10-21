@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_theme.dart';
 import '../models/user_model.dart';
@@ -54,7 +55,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
-      initialDate: _selectedDateOfBirth ?? DateTime(now.year - 25, now.month, now.day),
+      initialDate:
+          _selectedDateOfBirth ?? DateTime(now.year - 25, now.month, now.day),
       firstDate: DateTime(1900),
       lastDate: now,
     );
@@ -145,6 +147,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         const SizedBox(height: 24),
                         TextFormField(
                           controller: _nameController,
+                          inputFormatters: [
+                            LengthLimitingTextInputFormatter(80),
+                          ],
                           textCapitalization: TextCapitalization.words,
                           decoration: const InputDecoration(
                             labelText: 'Full name',
@@ -158,6 +163,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         const SizedBox(height: 14),
                         TextFormField(
                           controller: _phoneController,
+                          inputFormatters: [
+                            LengthLimitingTextInputFormatter(20),
+                          ],
                           keyboardType: TextInputType.phone,
                           decoration: const InputDecoration(
                             labelText: 'Phone number',
@@ -178,6 +186,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         const SizedBox(height: 14),
                         TextFormField(
                           controller: _cityController,
+                          inputFormatters: [
+                            LengthLimitingTextInputFormatter(80),
+                          ],
                           textCapitalization: TextCapitalization.words,
                           decoration: const InputDecoration(
                             labelText: 'City / location',

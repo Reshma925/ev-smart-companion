@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/user_model.dart';
 import '../models/vehicle.dart';
@@ -214,6 +215,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                   children: [
                     TextFormField(
                       controller: rangeController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(8)],
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
@@ -233,6 +235,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: capacityController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(8)],
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
@@ -253,6 +256,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: connectorController,
+                      inputFormatters: [LengthLimitingTextInputFormatter(40)],
                       decoration: const InputDecoration(
                         labelText: 'Connector type',
                         helperText: 'Optional; enter a known connector type.',

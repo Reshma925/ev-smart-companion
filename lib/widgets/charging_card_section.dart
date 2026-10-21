@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
@@ -653,6 +654,13 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
       return;
     }
 
+    // Keep the full card number on this device: only the last four characters
+    // are passed on, and the data layer stores the masked form.
+    final compactNumber = cardNumber.replaceAll(RegExp(r'[\s-]'), '');
+    final cardLastFour = compactNumber.length < 4
+        ? null
+        : compactNumber.substring(compactNumber.length - 4);
+
     setState(() {
       _saving = true;
       _error = null;
@@ -663,7 +671,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
         await widget.firestoreService.registerChargingCard(
           uid: widget.uid,
           cardType: _typeController.text,
-          cardNumber: _numberController.text,
+          cardLastFour: cardLastFour ?? '',
           cardHolderName: _holderController.text,
           vehicleId: vehicleId,
           expiryDate: _expiryDate,
@@ -672,7 +680,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
         await widget.firestoreService.updateChargingCardDetails(
           uid: widget.uid,
           cardType: _typeController.text,
-          cardNumber: _numberController.text,
+          cardLastFour: cardLastFour,
           cardHolderName: _holderController.text,
           vehicleId: vehicleId,
           expiryDate: _expiryDate,
@@ -735,6 +743,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
             const SizedBox(height: 18),
             TextFormField(
               controller: _typeController,
+              inputFormatters: [LengthLimitingTextInputFormatter(40)],
               textCapitalization: TextCapitalization.words,
               decoration: const InputDecoration(
                 labelText: 'Card type',
@@ -745,6 +754,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
             const SizedBox(height: 12),
             TextFormField(
               controller: _numberController,
+              inputFormatters: [LengthLimitingTextInputFormatter(40)],
               decoration: const InputDecoration(
                 labelText: 'Card number',
                 hintText: 'Enter a number, or leave empty to keep it',
@@ -773,6 +783,7 @@ class _ChargingCardFormState extends State<_ChargingCardForm> {
             const SizedBox(height: 12),
             TextFormField(
               controller: _holderController,
+              inputFormatters: [LengthLimitingTextInputFormatter(80)],
               textCapitalization: TextCapitalization.words,
               decoration: const InputDecoration(labelText: 'Card holder name'),
               validator: _requiredValidator,

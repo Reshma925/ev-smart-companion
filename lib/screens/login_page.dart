@@ -116,6 +116,7 @@ class _LoginPageState extends State<LoginPage> {
                 TextInputField(
                   controller: identityController,
                   label: 'Email',
+                  maxLength: 254,
                   hint: 'Enter your email',
                   icon: Icons.person_outline,
                   keyboardType: TextInputType.emailAddress,

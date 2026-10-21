@@ -122,6 +122,7 @@ class _SignUpPageState extends State<SignUpPage> {
                 TextInputField(
                   controller: name,
                   label: 'Full Name',
+                  maxLength: 80,
                   hint: 'Enter your full name',
                   icon: Icons.person_outline,
                   validator: (v) => v == null || v.trim().isEmpty
@@ -133,6 +134,7 @@ class _SignUpPageState extends State<SignUpPage> {
                   TextInputField(
                     controller: email,
                     label: 'Email',
+                    maxLength: 254,
                     hint: 'Enter your email',
                     icon: Icons.email_outlined,
                     keyboardType: TextInputType.emailAddress,
@@ -159,11 +161,15 @@ class _SignUpPageState extends State<SignUpPage> {
                 TextInputField(
                   controller: mobile,
                   label: 'Mobile Number',
+                  maxLength: 20,
                   hint: 'Enter your mobile number',
                   icon: Icons.phone_outlined,
                   keyboardType: TextInputType.phone,
                   validator: (v) =>
-                      v == null || v.replaceAll(RegExp(r'\D'), '').length < 10
+                      v == null ||
+                          !RegExp(r'^[+()\d\s-]+$').hasMatch(v.trim()) ||
+                          v.replaceAll(RegExp(r'\D'), '').length < 10 ||
+                          v.replaceAll(RegExp(r'\D'), '').length > 15
                       ? 'Enter a valid mobile number'
                       : null,
                 ),

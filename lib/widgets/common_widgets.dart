@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../app_theme.dart';
 
 class PrimaryButton extends StatelessWidget {
@@ -113,6 +114,7 @@ class TextInputField extends StatelessWidget {
     this.keyboardType,
     this.textCapitalization = TextCapitalization.none,
     this.validator,
+    this.maxLength = 100,
   });
 
   final TextEditingController controller;
@@ -122,6 +124,9 @@ class TextInputField extends StatelessWidget {
   final TextInputType? keyboardType;
   final TextCapitalization textCapitalization;
   final String? Function(String?)? validator;
+
+  /// Hard input limit; enforced silently so the field looks unchanged.
+  final int maxLength;
 
   @override
   Widget build(BuildContext context) {
@@ -142,6 +147,7 @@ class TextInputField extends StatelessWidget {
           keyboardType: keyboardType,
           textCapitalization: textCapitalization,
           validator: validator,
+          inputFormatters: [LengthLimitingTextInputFormatter(maxLength)],
           decoration: InputDecoration(
             hintText: hint,
             prefixIcon: icon == null
@@ -161,12 +167,14 @@ class PasswordInputField extends StatefulWidget {
     required this.label,
     required this.hint,
     this.validator,
+    this.maxLength = 128,
   });
 
   final TextEditingController controller;
   final String label;
   final String hint;
   final String? Function(String?)? validator;
+  final int maxLength;
 
   @override
   State<PasswordInputField> createState() => _PasswordInputFieldState();
@@ -193,6 +201,7 @@ class _PasswordInputFieldState extends State<PasswordInputField> {
           controller: widget.controller,
           obscureText: obscure,
           validator: widget.validator,
+          inputFormatters: [LengthLimitingTextInputFormatter(widget.maxLength)],
           decoration: InputDecoration(
             hintText: widget.hint,
             prefixIcon: const Icon(

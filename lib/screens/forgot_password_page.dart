@@ -88,6 +88,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                 TextInputField(
                   controller: identity,
                   label: 'Email',
+                  maxLength: 254,
                   hint: 'Enter your account email',
                   icon: Icons.email_outlined,
                   keyboardType: TextInputType.emailAddress,

@@ -76,27 +76,7 @@ class FirestoreService {
       '${_firestore.app.options.projectId}',
     );
     debugPrint('[CHARGING CARD READ DEBUG] Firestore database: (default)');
-    debugPrint(
-      '[CHARGING CARD READ DEBUG] Authenticated UID: '
-      '${authenticatedUser?.uid ?? '<none>'}',
-    );
-    debugPrint(
-      '[CHARGING CARD READ DEBUG] Authenticated email: '
-      '${authenticatedUser?.email ?? '<none>'}',
-    );
     debugPrint('[CHARGING CARD READ DEBUG] Selected vehicle ID: $vehicleId');
-    debugPrint(
-      '[CHARGING CARD READ DEBUG] Selected vehicle model: '
-      '${vehicleModel ?? '<not supplied>'}',
-    );
-    debugPrint(
-      '[CHARGING CARD READ DEBUG] Selected vehicle registration: '
-      '${vehicleRegistration ?? '<not supplied>'}',
-    );
-    debugPrint(
-      '[CHARGING CARD READ DEBUG] Exact Firestore document path: '
-      '${cardDocument.path}',
-    );
     debugPrint(
       '[CHARGING CARD READ DEBUG] Is currentUser null: '
       '${authenticatedUser == null}',
@@ -123,10 +103,6 @@ class FirestoreService {
             '${snapshot.metadata.isFromCache}',
           );
           if (!snapshot.exists) {
-            debugPrint(
-              '[CHARGING CARD READ DEBUG] Document does not exist at '
-              '${cardDocument.path}',
-            );
             sink.add(null);
             return;
           }
@@ -557,7 +533,7 @@ class FirestoreService {
   Future<ChargingCard> registerChargingCard({
     required String uid,
     required String cardType,
-    required String cardNumber,
+    required String cardLastFour,
     required String cardHolderName,
     required String vehicleId,
     DateTime? expiryDate,
@@ -576,7 +552,6 @@ class FirestoreService {
       authenticatedUid,
       normalizedVehicleId,
     );
-    debugPrint('[CARD PROD DEBUG] Starting Firestore registration');
     debugPrint(
       '[CARD PROD DEBUG] Firebase project ID: '
       '${_firestore.app.options.projectId}',
@@ -586,17 +561,11 @@ class FirestoreService {
       '[CARD PROD DEBUG] Firestore emulator routing: not configured '
       '(no useFirestoreEmulator call in lib/)',
     );
-    debugPrint('[CARD PROD DEBUG] Authenticated email: ${user.email}');
-    debugPrint('[CARD PROD DEBUG] Authenticated UID: $authenticatedUid');
     debugPrint(
       '[CARD PROD DEBUG] FirebaseFirestore.instance is active instance: '
       '${identical(_firestore, FirebaseFirestore.instance)}',
     );
     debugPrint('[CARD PROD DEBUG] Vehicle ID: $normalizedVehicleId');
-    debugPrint(
-      '[CARD PROD DEBUG] Target path:\n'
-      '${cardDocument.path}',
-    );
     try {
       _requireCurrentUser(authenticatedUid);
     } on FirebaseException catch (error) {
@@ -607,11 +576,11 @@ class FirestoreService {
       rethrow;
     }
     final normalizedType = cardType.trim();
-    final normalizedNumber = cardNumber.trim();
+    final normalizedNumber = cardLastFour.trim();
     final normalizedHolder = cardHolderName.trim();
     final normalizedCurrency = currency.trim().toUpperCase();
     if (normalizedType.isEmpty ||
-        _cardLastFour(normalizedNumber) == null ||
+        !_isCardLastFour(normalizedNumber) ||
         normalizedHolder.isEmpty ||
         normalizedVehicleId.isEmpty ||
         expiryDate == null ||
@@ -622,16 +591,8 @@ class FirestoreService {
     }
     late Vehicle verifiedVehicle;
     try {
-      debugPrint(
-        '[CARD PROD DEBUG] Pre-registration server read path: '
-        '${cardDocument.path}',
-      );
       final beforeWrite = await cardDocument.get(
         const GetOptions(source: Source.server),
-      );
-      debugPrint(
-        '[CARD PROD DEBUG] Pre-registration server read exists: '
-        '${beforeWrite.exists}',
       );
       if (beforeWrite.exists) {
         throw StateError(
@@ -659,11 +620,6 @@ class FirestoreService {
             'A charging card is already registered for this vehicle.',
           );
         }
-        debugPrint('[CARD PROD DEBUG] Vehicle model: ${vehicle.model}');
-        debugPrint(
-          '[CARD PROD DEBUG] Vehicle registration: '
-          '${vehicle.registrationNumber}',
-        );
         debugPrint('[CARD PROD DEBUG] Creating Firestore card document...');
         transaction.set(cardDocument, {
           'cardId': cardDocument.id,
@@ -683,16 +639,12 @@ class FirestoreService {
         });
       });
       debugPrint('[CARD PROD DEBUG] WRITE COMPLETED');
-      debugPrint(
-        '[CARD PROD DEBUG] Written document path: ${cardDocument.path}',
-      );
     } catch (error) {
       _logChargingCardWriteFailure(error);
       rethrow;
     }
 
     try {
-      debugPrint('[CARD PROD DEBUG] SERVER READ PATH: ${cardDocument.path}');
       final snapshot = await cardDocument.get(
         const GetOptions(source: Source.server),
       );
@@ -733,24 +685,6 @@ class FirestoreService {
           'Firestore read-back returned data that failed card verification.',
         );
       }
-      const safeFields = [
-        'cardType',
-        'maskedCardNumber',
-        'cardHolderName',
-        'vehicleId',
-        'vehicleModel',
-        'vehicleRegistrationNumber',
-        'vehicleVin',
-        'expiryDate',
-        'balance',
-        'currency',
-        'status',
-      ];
-      final safeData = {
-        for (final field in safeFields)
-          if (data.containsKey(field)) field: data[field],
-      };
-      debugPrint('[CARD PROD DEBUG] SERVER DOCUMENT DATA: $safeData');
       return ChargingCard.fromMap(data, id: snapshot.id);
     } catch (error) {
       _logChargingCardWriteFailure(error);
@@ -774,19 +708,18 @@ class FirestoreService {
   Future<ChargingCard> updateChargingCardDetails({
     required String uid,
     required String cardType,
-    String? cardNumber,
+    String? cardLastFour,
     required String cardHolderName,
     required String vehicleId,
     DateTime? expiryDate,
   }) async {
     _requireCurrentUser(uid);
     final normalizedType = cardType.trim();
-    final normalizedNumber = cardNumber?.trim() ?? '';
+    final normalizedNumber = cardLastFour?.trim() ?? '';
     final normalizedHolder = cardHolderName.trim();
     final normalizedVehicleId = vehicleId.trim();
     if (normalizedType.isEmpty ||
-        (normalizedNumber.isNotEmpty &&
-            _cardLastFour(normalizedNumber) == null) ||
+        (normalizedNumber.isNotEmpty && !_isCardLastFour(normalizedNumber)) ||
         normalizedHolder.isEmpty ||
         normalizedVehicleId.isEmpty ||
         expiryDate == null) {
@@ -869,6 +802,10 @@ class FirestoreService {
     return card;
   }
 
+  // Only the last four characters of a card number ever leave the form.
+  static bool _isCardLastFour(String value) =>
+      RegExp(r'^[A-Za-z0-9]{4}$').hasMatch(value);
+
   static String? _cardLastFour(String value) {
     final compact = value.replaceAll(RegExp(r'[\s-]'), '');
     if (!RegExp(r'^[A-Za-z0-9]{4,32}$').hasMatch(compact)) return null;
@@ -920,7 +857,9 @@ class FirestoreService {
       final data = snapshot.data();
       if (snapshot.exists && data != null) {
         if (data['vehicleId'] != vehicleId || data['preferences'] is! Map) {
-          throw StateError('Vehicle controls preferences have an invalid scope.');
+          throw StateError(
+            'Vehicle controls preferences have an invalid scope.',
+          );
         }
         return VehicleControlsPreferences.fromMap(data['preferences']);
       }
