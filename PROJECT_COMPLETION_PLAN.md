@@ -626,7 +626,7 @@ Phase	Status	Notes
 0. Tools + hardware	☑	Tools verified by agent (Node v24 instead of v22). Developer Mode and phone setup not checked by agent; confirmed at Phase 5.
 1. Protect + audit	☑	Baseline 108 tests pass, analyzer clean. Neither the Phase 2 nor the Phase 3 fix was present.
 2. Login / Sign Up / auth guard / logout	☑	Added `signOutAction` to AuthGate, `_DestinationLoadError` ("Sign out") and onboarding SignUpPage ("Sign out and use another account"). New test for load-error sign-out; 109 tests pass, analyzer clean. Onboarding button has no widget test: SignUpPage reads FirebaseAuth.instance in onboarding initState, so it cannot render without Firebase; verify on device in Phase 5.
-3. Vehicle screen + chooser + BLE	☐	
+3. Vehicle screen + chooser + BLE	☑	Added `_requireDeviceSelection` to `VehicleBleClient`: set on web disconnect (covers logout and vehicle switch), cleared on DEVICE_SELECTED; cancelled chooser no longer reconnects the old device. Vehicle-switch test now expects [true, true]; 2 new tests. 111 tests pass, analyzer clean. Scanning page already met all checks; no change. Protocol, UUIDs and link-loss reconnect untouched.
 4. Shared telemetry, real-data-only	☐	
 5. Real-device check (Part A)	☐	
 6. Front-end security	☐	

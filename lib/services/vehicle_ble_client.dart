@@ -70,6 +70,10 @@ class VehicleBleClient extends ChangeNotifier {
   bool _discoveryRunning = false;
   bool _connecting = false;
   bool _manualDisconnect = false;
+  // The browser adapter remembers the chosen device for the whole tab. After a
+  // manual disconnect, sign-out or vehicle switch the next Connect must open
+  // Chrome's chooser again instead of silently reusing the old device.
+  bool _requireDeviceSelection = false;
   int _reconnectAttempts = 0;
   Completer<void>? _firstStatePacket;
   Future<void> _writeQueue = Future<void>.value();
@@ -92,7 +96,9 @@ class VehicleBleClient extends ChangeNotifier {
   DateTime? get lastDataUpdate => _lastDataUpdate;
   String? get vehicleId => _vehicleId.isEmpty ? null : _vehicleId;
   String? get selectedDeviceName => _isWebMode
-      ? _resolvedWebAdapter?.selectedDeviceName
+      ? (_requireDeviceSelection
+            ? null
+            : _resolvedWebAdapter?.selectedDeviceName)
       : _selectedDeviceName;
   bool? get secureContext => _secureContext;
   String? get bluetoothPolicyStatus => _bluetoothPolicyStatus;
@@ -239,6 +245,7 @@ class VehicleBleClient extends ChangeNotifier {
     _reconnectTimer?.cancel();
     _scanTimeoutTimer?.cancel();
     if (_isWebMode) {
+      _requireDeviceSelection = true;
       final connection = _webConnection;
       _webConnection = null;
       await _cancelWebSubscriptions();
@@ -324,10 +331,11 @@ class VehicleBleClient extends ChangeNotifier {
       return;
     }
     _connecting = true;
+    final requestDevice = _requireDeviceSelection || !adapter.hasSelectedDevice;
     _setPhase(
-      adapter.hasSelectedDevice
-          ? VehicleBlePhase.connecting
-          : VehicleBlePhase.selectingDevice,
+      requestDevice
+          ? VehicleBlePhase.selectingDevice
+          : VehicleBlePhase.connecting,
       null,
     );
     try {
@@ -336,13 +344,14 @@ class VehicleBleClient extends ChangeNotifier {
         return;
       }
       final connection = await adapter.connect(
-        requestDevice: !adapter.hasSelectedDevice,
+        requestDevice: requestDevice,
         onConnecting: () => _setPhase(VehicleBlePhase.connecting, null),
         onStage: (stage) {
           _logBleEvent(
             stage,
             'peripheral=${adapter.selectedDeviceName ?? 'unknown'}',
           );
+          if (stage == 'DEVICE_SELECTED') _requireDeviceSelection = false;
           switch (stage) {
             case 'DEVICE_SELECTED':
             case 'GATT_CONNECT_STARTED':
@@ -423,7 +432,10 @@ class VehicleBleClient extends ChangeNotifier {
       _firstStatePacket = null;
       _setPhase(VehicleBlePhase.error, _webErrorMessage(error));
       debugPrint('[Vehicle BLE Web] Connection failed: $error');
-      if (adapter.hasSelectedDevice) _scheduleReconnect();
+      // A cancelled chooser must not fall back to the previous device.
+      if (adapter.hasSelectedDevice && !_requireDeviceSelection) {
+        _scheduleReconnect();
+      }
     } finally {
       _connecting = false;
     }

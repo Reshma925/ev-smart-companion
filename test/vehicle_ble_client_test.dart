@@ -279,7 +279,7 @@ void main() {
 
         await client.start('EV002');
 
-        expect(adapter.requestDeviceArguments, [true, false]);
+        expect(adapter.requestDeviceArguments, [true, true]);
         expect(client.phase, VehicleBlePhase.identityMismatch);
         expect(client.error, contains('selected vehicle document ID "EV002"'));
         expect(client.error, contains('simulator reports "EV001"'));
@@ -330,6 +330,46 @@ void main() {
       expect(client.isConnected, isTrue);
     });
 
+    test(
+      'Connect after a manual disconnect or sign-out opens the chooser again',
+      () async {
+        final adapter = _FakeWebAdapter();
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+        await client.start('vehicle-1');
+
+        await client.disconnect();
+        expect(client.selectedDeviceName, isNull);
+
+        await client.start('vehicle-1');
+
+        expect(adapter.requestDeviceArguments, [true, true]);
+        expect(adapter.connections, hasLength(2));
+        expect(client.isConnected, isTrue);
+      },
+    );
+
+    test(
+      'cancelling the chooser does not reconnect the previous device',
+      () async {
+        final adapter = _FakeWebAdapter();
+        final client = VehicleBleClient(webAdapter: adapter);
+        addTearDown(client.dispose);
+        await client.start('vehicle-1');
+        await client.disconnect();
+
+        adapter.chooserError = StateError(
+          'DEVICE_REQUEST: NotFoundError: User cancelled the requestDevice() chooser.',
+        );
+        await client.start('vehicle-1');
+        await Future<void>.delayed(const Duration(milliseconds: 2200));
+
+        expect(client.phase, VehicleBlePhase.error);
+        expect(client.error, contains('did not select a matching device'));
+        expect(adapter.connections, hasLength(1));
+      },
+    );
+
     test('manual disconnect stops automatic reconnects', () async {
       final adapter = _FakeWebAdapter();
       final client = VehicleBleClient(webAdapter: adapter);
@@ -362,6 +402,7 @@ class _FakeWebAdapter implements VehicleBleWebAdapter {
   final List<_FakeWebConnection> connections = [];
   final List<bool> requestDeviceArguments = [];
   Object? connectError;
+  Object? chooserError;
   bool _hasSelectedDevice = false;
   bool secureContext = true;
   String policyStatus = 'allowed';
@@ -396,6 +437,8 @@ class _FakeWebAdapter implements VehicleBleWebAdapter {
   }) async {
     requestDeviceArguments.add(requestDevice);
     if (requestDevice) {
+      final cancellation = chooserError;
+      if (cancellation != null) throw cancellation;
       _hasSelectedDevice = true;
       onStage?.call('DEVICE_SELECTED');
     }
