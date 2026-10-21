@@ -13,7 +13,7 @@ import 'api/api_client.dart';
 ///
 /// Live vehicle measurements are not here: they come only from
 /// [VehicleBleClient.shared]. The `uid` parameters are kept so screens did not
-/// change; the server identifies the user from the Firebase ID token and
+/// change; the server identifies the user from the access token and
 /// enforces ownership of every vehicle.
 class DataService {
   DataService({ApiClient? api, Duration? pollInterval})

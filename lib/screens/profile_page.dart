@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
@@ -26,33 +25,23 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePageState extends State<ProfilePage> {
   final _authService = AuthService();
-  late final StreamSubscription<User?> _authSubscription;
-  User? _user;
+  late final StreamSubscription<AuthUser?> _authSubscription;
+  AuthUser? _user;
   bool _signingOut = false;
 
   @override
   void initState() {
     super.initState();
     _user = _authService.currentUser;
-    _authSubscription = _authService.authStateChanges.listen((user) {
+    _authSubscription = _authService.authStateChanges().listen((user) {
       if (mounted) setState(() => _user = user);
     });
-    _reloadAuthUser();
   }
 
   @override
   void dispose() {
     _authSubscription.cancel();
     super.dispose();
-  }
-
-  Future<void> _reloadAuthUser() async {
-    try {
-      await _authService.currentUser?.reload();
-      if (mounted) setState(() => _user = _authService.currentUser);
-    } catch (_) {
-      // Keep the locally available authenticated identity if refresh is offline.
-    }
   }
 
   Future<void> _signOut() async {
@@ -138,7 +127,7 @@ class _ProfileDetails extends StatefulWidget {
     required this.onMessage,
   });
 
-  final User user;
+  final AuthUser user;
   final AuthService authService;
   final bool signingOut;
   final VoidCallback onSignOut;
@@ -303,40 +292,6 @@ class _ProfileDetailsState extends State<_ProfileDetails>
     }
   }
 
-  Future<void> _verifyEmail() async {
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) {
-      widget.onMessage('No authenticated user is available.');
-      return;
-    }
-
-    try {
-      await currentUser.sendEmailVerification();
-      await currentUser.reload();
-      if (mounted) {
-        widget.onMessage(
-          'Verification email sent. Please check your inbox and refresh your status.',
-        );
-        setState(() {});
-      }
-    } catch (error) {
-      if (mounted) {
-        widget.onMessage(widget.authService.messageFor(error));
-      }
-    }
-  }
-
-  Future<void> _refreshEmailStatus() async {
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return;
-    try {
-      await currentUser.reload();
-      if (mounted) setState(() {});
-    } catch (_) {
-      // The existing auth state is still valid if the refresh fails.
-    }
-  }
-
   Future<void> _showPreferenceDialog({
     required String title,
     required List<String> options,
@@ -401,7 +356,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
           icon: Icons.cloud_off_outlined,
           title: 'Profile unavailable',
           message:
-              'We could not load your Firestore profile. Check your connection and retry.',
+              'We could not load your profile. Check your connection and retry.',
           actionLabel: 'Retry',
           onAction: _retryProfile,
         );
@@ -415,8 +370,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
         return _ProfileStateMessage(
           icon: Icons.person_off_outlined,
           title: 'Profile not found',
-          message:
-              'There is no Firestore profile linked to this signed-in account.',
+          message: 'There is no profile linked to this signed-in account.',
           actionLabel: 'Retry',
           onAction: _retryProfile,
         );
@@ -431,7 +385,7 @@ class _ProfileDetailsState extends State<_ProfileDetails>
               icon: Icons.cloud_off_outlined,
               title: 'Profile updates unavailable',
               message:
-                  'Your profile was loaded, but live Firestore updates are unavailable.',
+                  'Your profile was loaded, but live updates are unavailable.',
               actionLabel: 'Retry',
               onAction: _retryProfile,
             );
@@ -450,10 +404,10 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                   padding: const EdgeInsets.fromLTRB(18, 12, 18, 36),
                   children: [
                     _ProfileHeader(
-                      user: FirebaseAuth.instance.currentUser ?? widget.user,
+                      user: widget.user,
                       profile: profile,
                       uploading: _uploadingPhoto,
-                    loadPhoto: _data.getProfilePhoto,
+                      loadPhoto: _data.getProfilePhoto,
                       onEditProfile: () => _editProfile(profile),
                       onEditPhoto: _uploadProfilePhoto,
                     ),
@@ -462,15 +416,13 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                     const SizedBox(height: 12),
                     _PersonalInfoCard(
                       profile: profile,
-                      createdAt:
-                          widget.user.metadata.creationTime ??
-                          profile.createdAt,
+                      createdAt: profile.createdAt,
                     ),
                     const SizedBox(height: 24),
                     _SectionHeader(title: 'My vehicle'),
                     const SizedBox(height: 12),
                     _VehicleShortcutCard(
-                      firestore: _data,
+                      dataService: _data,
                       vehicleId: profile.vehicleId,
                       onTap: () async {
                         if (profile.vehicleId == null ||
@@ -487,12 +439,13 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                           return;
                         }
                         final navContext = context;
-                        final linkedVehicle = await _data
-                            .getVehicleRecordById(profile.vehicleId!);
+                        final linkedVehicle = await _data.getVehicleRecordById(
+                          profile.vehicleId!,
+                        );
                         if (!mounted) return;
                         if (linkedVehicle == null) {
                           widget.onMessage(
-                            'The linked vehicle is unavailable in Firestore.',
+                            'The linked vehicle is unavailable.',
                           );
                           return;
                         }
@@ -547,10 +500,8 @@ class _ProfileDetailsState extends State<_ProfileDetails>
                     _SectionHeader(title: 'Account'),
                     const SizedBox(height: 12),
                     _AccountCard(
-                      user: FirebaseAuth.instance.currentUser ?? widget.user,
+                      user: widget.user,
                       signingOut: widget.signingOut,
-                      onVerifyEmail: _verifyEmail,
-                      onRefreshStatus: _refreshEmailStatus,
                       onTap: widget.onSignOut,
                     ),
                   ],
@@ -566,12 +517,12 @@ class _ProfileDetailsState extends State<_ProfileDetails>
 
 class _VehicleShortcutCard extends StatelessWidget {
   const _VehicleShortcutCard({
-    required this.firestore,
+    required this.dataService,
     required this.vehicleId,
     required this.onTap,
   });
 
-  final DataService firestore;
+  final DataService dataService;
   final String? vehicleId;
   final VoidCallback onTap;
 
@@ -587,7 +538,7 @@ class _VehicleShortcutCard extends StatelessWidget {
     }
 
     return StreamBuilder<Vehicle?>(
-      stream: firestore.watchVehicleById(id),
+      stream: dataService.watchVehicleById(id),
       builder: (context, snapshot) {
         final vehicle = snapshot.data;
         return _card(
@@ -777,23 +728,16 @@ class _AccountCard extends StatelessWidget {
   const _AccountCard({
     required this.user,
     required this.signingOut,
-    required this.onVerifyEmail,
-    required this.onRefreshStatus,
     required this.onTap,
   });
 
-  final User user;
+  final AuthUser user;
   final bool signingOut;
-  final VoidCallback onVerifyEmail;
-  final VoidCallback onRefreshStatus;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final verified = user.emailVerified;
-    final statusColor = verified
-        ? const Color(0xFF16875A)
-        : const Color(0xFFB87B00);
+    const statusColor = AppTheme.navy;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -807,38 +751,23 @@ class _AccountCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                verified
-                    ? Icons.verified_rounded
-                    : Icons.mark_email_unread_outlined,
+              const Icon(
+                Icons.account_circle_outlined,
                 color: statusColor,
                 size: 21,
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  verified ? 'Email verified' : 'Email not verified',
-                  style: TextStyle(
+                  'Signed in as ${user.email}',
+                  style: const TextStyle(
                     color: statusColor,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
-              TextButton(
-                onPressed: onRefreshStatus,
-                child: const Text('Refresh'),
-              ),
             ],
           ),
-          if (!verified)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: onVerifyEmail,
-                icon: const Icon(Icons.send_outlined, size: 18),
-                label: const Text('Send verification email'),
-              ),
-            ),
           const Divider(height: 20),
           SizedBox(
             width: double.infinity,
@@ -873,7 +802,7 @@ class _ProfileHeader extends StatelessWidget {
     required this.onEditPhoto,
   });
 
-  final User user;
+  final AuthUser user;
   final UserModel profile;
   final bool uploading;
   final Future<Uint8List?> Function() loadPhoto;
@@ -886,7 +815,7 @@ class _ProfileHeader extends StatelessWidget {
     final displayName = profile.name.trim().isEmpty
         ? 'Not provided'
         : profile.name.trim();
-    final authEmail = user.email?.trim() ?? '';
+    final authEmail = user.email.trim();
     final displayEmail = authEmail.isNotEmpty
         ? authEmail
         : profile.email.trim().isNotEmpty
@@ -1133,12 +1062,12 @@ class _PersonalInfoTile extends StatelessWidget {
 
 class _VehicleSummaryCard extends StatefulWidget {
   const _VehicleSummaryCard({
-    required this.firestore,
+    required this.dataService,
     required this.vehicleId,
     required this.distanceUnit,
   });
 
-  final DataService firestore;
+  final DataService dataService;
   final String vehicleId;
   final String distanceUnit;
 
@@ -1164,7 +1093,7 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
   }
 
   void _subscribe() {
-    _vehicleStream = widget.firestore.watchVehicleById(widget.vehicleId);
+    _vehicleStream = widget.dataService.watchVehicleById(widget.vehicleId);
   }
 
   @override
@@ -1175,7 +1104,7 @@ class _VehicleSummaryCardState extends State<_VehicleSummaryCard> {
         return _ProfileStateMessage(
           icon: Icons.cloud_off_outlined,
           title: 'Vehicle unavailable',
-          message: 'We could not load your registered EV from Firestore.',
+          message: 'We could not load your registered EV.',
           actionLabel: 'Retry',
           onAction: () => setState(_subscribe),
         );
@@ -1580,7 +1509,7 @@ class _SignedOutView extends StatelessWidget {
       child: _ProfileStateMessage(
         icon: Icons.lock_outline_rounded,
         title: 'You are signed out',
-        message: 'Sign in to view your Firebase profile and registered EV.',
+        message: 'Sign in to view your profile and registered EV.',
         actionLabel: 'Sign in',
         onAction: onSignIn,
       ),

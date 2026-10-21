@@ -42,7 +42,7 @@ const maintenanceSchema = z.object({
 });
 
 // Mirrors PassengerProfile / VehicleAlert / VehicleControlsPreferences in
-// lib/models/vehicle_controls.dart and validVehicleControlsPreferences in firestore.rules.
+// lib/models/vehicle_controls.dart and the original preference limits.
 const mirror = z.number().finite().min(-20).max(20);
 const passengerProfileSchema = z.strictObject({
   id: requiredText(64),

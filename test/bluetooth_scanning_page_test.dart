@@ -1,10 +1,10 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
 import 'package:flutter_application_2/screens/auth_gate.dart';
+import 'package:flutter_application_2/services/auth_service.dart';
 import 'package:flutter_application_2/screens/bluetooth_scanning_page.dart';
 import 'package:flutter_application_2/services/vehicle_ble_client.dart';
 import 'package:flutter_application_2/services/vehicle_ble_web_adapter_interface.dart';
@@ -85,7 +85,7 @@ void main() {
         ownerName: 'Test Owner',
         vin: 'TESTVIN',
       );
-      final authChanges = StreamController<User?>.broadcast();
+      final authChanges = StreamController<AuthUser?>.broadcast();
       addTearDown(authChanges.close);
       final client = VehicleBleClient(
         webAdapter: _ChooserAdapter(),
@@ -102,7 +102,7 @@ void main() {
           ),
         ),
       );
-      authChanges.add(_TestUser());
+      authChanges.add(_testUser);
       await tester.pumpAndSettle();
 
       expect(find.text('Vehicle connection'), findsOneWidget);
@@ -112,13 +112,10 @@ void main() {
   );
 }
 
-class _TestUser implements User {
-  @override
-  String get uid => 'authenticated-test-user';
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
+const _testUser = AuthUser(
+  uid: 'authenticated-test-user',
+  email: 'driver@example.com',
+);
 
 class _ChooserAdapter implements VehicleBleWebAdapter {
   final List<bool> requestDeviceArguments = [];

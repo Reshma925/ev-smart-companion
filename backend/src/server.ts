@@ -2,7 +2,8 @@ import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './db/connect.js';
 import { logger } from './logger.js';
-import { createFirebaseTokenVerifier } from './middleware/auth.js';
+import { createJwtVerifier } from './middleware/auth.js';
+import { authRouter } from './routes/auth.js';
 import { createRouters } from './routes/index.js';
 
 const env = loadEnv();
@@ -12,10 +13,12 @@ await connectDatabase({
   autoIndex: env.nodeEnv !== 'production',
 });
 
+const verifyAccessToken = createJwtVerifier(env.jwtSecret);
 const app = createApp({
   nodeEnv: env.nodeEnv,
   corsOrigins: env.corsOrigins,
-  verifyIdToken: createFirebaseTokenVerifier(env.firebaseProjectId),
+  verifyIdToken: verifyAccessToken,
+  authRouter: authRouter({ jwtSecret: env.jwtSecret, verifyAccessToken }),
   routers: createRouters({
     paypal: {
       clientId: env.paypalClientId,

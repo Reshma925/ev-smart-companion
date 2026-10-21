@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_2/models/vehicle.dart';
 
 void main() {
-  test('parses a pre-registered vehicle document with Firestore identity', () {
+  test('parses a pre-registered vehicle document with its stored identity', () {
     final vehicle = Vehicle.fromMap({
       'registrationNumber': 'TN01AB1234',
       'model': 'EV Smart X1',
@@ -34,7 +34,7 @@ void main() {
     expect(vehicle.isActive, isFalse);
   });
 
-  test('reads configured maximum range from known Firestore fields', () {
+  test('reads configured maximum range from known vehicle fields', () {
     final vehicle = Vehicle.fromMap({
       'registrationNumber': 'TN01AB1234',
       'model': 'EV Smart X1',
@@ -48,7 +48,7 @@ void main() {
     expect(vehicle.maximumRangeKm, 420);
   });
 
-  test('reads battery values stored on the registered Firestore vehicle', () {
+  test('reads battery values stored on the registered vehicle record', () {
     final vehicle = Vehicle.fromMap({
       'registrationNumber': 'TN01AB1234',
       'model': 'EV Smart X1',
@@ -64,7 +64,7 @@ void main() {
   });
 
   test(
-    'skips malformed preferred values in favor of valid Firestore aliases',
+    'skips malformed preferred values in favor of valid field aliases',
     () {
       final vehicle = Vehicle.fromMap({
         'registrationNumber': 'TN01AB1234',
@@ -83,7 +83,7 @@ void main() {
     },
   );
 
-  test('does not invent a maximum range when Firestore has no range field', () {
+  test('does not invent a maximum range when the record has no range field', () {
     final vehicle = Vehicle.fromMap({
       'registrationNumber': 'TN01AB1234',
       'model': 'EV Smart X1',
@@ -97,7 +97,7 @@ void main() {
   });
 
   test(
-    'serializes configured vehicle range using its Firestore field name',
+    'serializes configured vehicle range using its field name',
     () {
       const vehicle = Vehicle(
         model: 'EV Smart X1',

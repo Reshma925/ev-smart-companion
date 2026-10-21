@@ -1,4 +1,4 @@
-// Ported from functions/test/paypal_recharge.test.js.
+// Ported from the original PayPal recharge tests.
 import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 

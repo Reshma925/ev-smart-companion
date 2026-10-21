@@ -10,7 +10,7 @@ import 'support/fake_api.dart';
 
 void main() {
   group('ApiClient', () {
-    test('attaches the Firebase ID token and JSON headers', () async {
+    test('attaches the access token and JSON headers', () async {
       final api = FakeApi()..on('POST /v1/things', (_) => {'ok': true});
 
       final result = await api.client().post('/v1/things', {'name': 'x'});

@@ -6,5 +6,6 @@ export { ControlsPreferences, controlsPreferencesId } from './controlsPreference
 export { MaintenanceRecord } from './maintenanceRecord.js';
 export { PaypalOrder } from './paypalOrder.js';
 export { ProfilePhoto } from './profilePhoto.js';
+export { RefreshToken } from './refreshToken.js';
 export { User } from './user.js';
 export { Vehicle } from './vehicle.js';

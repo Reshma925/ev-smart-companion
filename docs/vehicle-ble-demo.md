@@ -9,9 +9,8 @@ the BLE peripheral on the Samsung phone. The simulator sends all demo state
 over BLE; it does not write to the backend or database. The main app accepts state only when
 its `vehicleId` matches the vehicle selected by the signed-in user.
 
-Firebase restores a valid persistent sign-in session on launch. A restored
-session proceeds to the Vehicle connection screen without showing Login;
-signing out returns to Login.
+Login tokens are kept in memory only, so every launch and every page reload
+(F5) shows Login. Signing out disconnects Bluetooth and returns to Login.
 
 Chrome Web Bluetooth requires a secure context (HTTPS, or localhost), an
 enabled Bluetooth adapter, a supported desktop browser/operating system, and
@@ -25,13 +24,12 @@ the same action begins BLE discovery. If the BLE link is lost after selection,
 the app retries the selected device with bounded
 backoff; after retries are exhausted, click **Reconnect** to retry. Use
 **Disconnect** to intentionally stop the link.
-The chooser and device permission are managed by Chrome, not Firebase.
+The chooser and device permission are managed by Chrome, not the app.
 
 ## Run on Windows PowerShell
 
 Start each command group in its own terminal, from the repository folder.
-Keep the backend and the simulator running while using the web app. The
-Firebase Functions emulator is no longer needed.
+Keep the backend and the simulator running while using the web app.
 
 **Terminal 1 — Backend API (needs `backend/.env`, see `backend/README.md`)**
 
@@ -76,8 +74,7 @@ then retry from Controls.
 1. Serve the Flutter Web app from `localhost` during development or from an
    HTTPS origin for the demonstration. Build with `flutter build web` before
    deploying it.
-2. Open the app in current desktop Google Chrome and sign in normally (a
-   restored Firebase session may already be signed in). Open Controls and copy
+2. Open the app in current desktop Google Chrome and sign in normally. Open Controls and copy
    the displayed vehicle document ID.
 3. From `vehicle_simulator/`, run the simulator on the Samsung phone. Enter the
    same vehicle ID and start the simulator. Allow Android's nearby-device/

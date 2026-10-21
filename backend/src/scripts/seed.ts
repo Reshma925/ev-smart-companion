@@ -2,7 +2,7 @@
 // changes ownerUid (a claimed vehicle stays claimed) and never overwrites a
 // range or connector a user configured in the app. No telemetry is seeded:
 // live vehicle data comes only from the BLE simulator.
-import { loadEnv } from '../config/env.js';
+import { loadDatabaseEnv } from '../config/env.js';
 import { connectDatabase, disconnectDatabase } from '../db/connect.js';
 import * as models from '../models/index.js';
 import { Vehicle } from '../models/vehicle.js';
@@ -51,7 +51,7 @@ const seedVehicles: SeedVehicle[] = [
   },
 ];
 
-const env = loadEnv();
+const env = loadDatabaseEnv();
 await connectDatabase({ uri: env.mongodbUri, dbName: env.mongodbDbName, autoIndex: false });
 
 let exitCode = 0;

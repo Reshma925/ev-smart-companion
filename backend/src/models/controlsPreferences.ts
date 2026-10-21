@@ -1,6 +1,6 @@
 import { model, Schema, type InferSchemaType } from 'mongoose';
 
-// Same keys and limits as validVehicleControlsPreferences in firestore.rules and
+// Same keys and limits as the original preference rules and
 // PassengerProfile / VehicleAlert in lib/models/vehicle_controls.dart.
 export const MAX_PASSENGER_PROFILES = 20;
 export const MAX_ALERT_HISTORY = 50;

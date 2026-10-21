@@ -1,3 +1,5 @@
+import bcrypt from 'bcryptjs';
+
 import { createApp } from '../src/app.js';
 import { ChargingCard } from '../src/models/chargingCard.js';
 import { User } from '../src/models/user.js';
@@ -77,7 +79,10 @@ export async function seedVehicles() {
   ]);
 }
 
-/** Alice owns EV001, Bob owns EV002. */
+export const TEST_PASSWORD = 'Password1';
+const testPasswordHash = bcrypt.hashSync(TEST_PASSWORD, 4);
+
+/** Alice owns EV001, Bob owns EV002; both use TEST_PASSWORD. */
 export async function seedOwners() {
   await seedVehicles();
   await Vehicle.updateOne({ _id: 'EV001' }, { ownerUid: 'alice' });
@@ -87,6 +92,7 @@ export async function seedOwners() {
       _id: 'alice',
       name: 'Alice',
       email: 'alice@example.com',
+      passwordHash: testPasswordHash,
       vehicleId: 'EV001',
       vehicleRegistrationNumber: EV001.registrationNumber,
     },
@@ -94,6 +100,7 @@ export async function seedOwners() {
       _id: 'bob',
       name: 'Bob',
       email: 'bob@example.com',
+      passwordHash: testPasswordHash,
       vehicleId: 'EV002',
       vehicleRegistrationNumber: EV002.registrationNumber,
     },

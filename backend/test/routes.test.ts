@@ -5,9 +5,8 @@ import { CardTransaction } from '../src/models/cardTransaction.js';
 import { ChargingCard } from '../src/models/chargingCard.js';
 import { ChargingSession } from '../src/models/chargingSession.js';
 import * as models from '../src/models/index.js';
-import { User } from '../src/models/user.js';
 import { Vehicle } from '../src/models/vehicle.js';
-import { apiApp, EV001, EV002, seedCard, seedOwners, seedVehicles } from './fixtures.js';
+import { apiApp, EV001, EV002, seedCard, seedOwners } from './fixtures.js';
 import { bearer } from './helpers.js';
 
 beforeAll(async () => {
@@ -79,7 +78,6 @@ const vehicleRoutes: [method: 'get' | 'post' | 'put' | 'patch', path: string, bo
 ];
 
 const allRoutes: [method: 'get' | 'post' | 'put' | 'patch', path: string, body?: object][] = [
-  ['post', '/v1/me/profile', { name: 'A', ...EV001 }],
   ['get', '/v1/me'],
   ['patch', '/v1/me', { city: 'Chennai' }],
   ['put', '/v1/me/photo', { contentType: 'image/png', base64: PNG.toString('base64') }],
@@ -120,76 +118,16 @@ describe('authentication and ownership', () => {
   });
 });
 
-describe('sign-up and profile', () => {
-  beforeEach(seedVehicles);
-
-  it('verifies the vehicle, claims it and creates the profile', async () => {
-    const response = await request(apiApp())
-      .post('/v1/me/profile')
-      .set(bearer('alice'))
-      .send({
-        name: 'Alice',
-        phone: '9876543210',
-        email: 'ALICE@example.com',
-        ...EV001,
-        registrationNumber: 'tn01 ab1234',
-      });
-    expect(response.status).toBe(201);
-    expect(response.body.vehicle).toMatchObject({
-      id: 'EV001',
-      bluetoothDeviceName: 'EV-Simulator-01',
-    });
-    expect(response.body.vehicle).not.toHaveProperty('ownerUid');
-    const user = await User.findById('alice').lean();
-    expect(user).toMatchObject({
-      email: 'alice@example.com',
-      vehicleId: 'EV001',
-      vehicleRegistrationNumber: 'TN01AB1234',
-    });
-    expect((await Vehicle.findById('EV001').lean())?.ownerUid).toBe('alice');
-  });
-
-  it('prevents a second account from claiming the same vehicle', async () => {
-    const app = apiApp();
-    await request(app)
-      .post('/v1/me/profile')
-      .set(bearer('alice'))
-      .send({ name: 'Alice', ...EV001 });
-    const response = await request(app)
-      .post('/v1/me/profile')
-      .set(bearer('mallory'))
-      .send({ name: 'Mallory', ...EV001 });
-    expect(response.status).toBe(409);
-    expect(response.body.error.code).toBe('vehicle_already_claimed');
-    expect(await User.exists({ _id: 'mallory' })).toBeNull();
-    expect((await Vehicle.findById('EV001').lean())?.ownerUid).toBe('alice');
-  });
-
-  it('rejects details that do not match the vehicle record', async () => {
-    const response = await request(apiApp())
-      .post('/v1/me/profile')
-      .set(bearer('alice'))
-      .send({ name: 'Alice', ...EV001, vin: 'WRONGVIN' });
-    expect(response.status).toBe(400);
-    expect(response.body.error.code).toBe('vehicle_not_verified');
-    expect((await Vehicle.findById('EV001').lean())?.ownerUid).toBeNull();
-  });
-
-  it('rejects a profile email that differs from the signed-in account', async () => {
-    const response = await request(apiApp())
-      .post('/v1/me/profile')
-      .set(bearer('alice'))
-      .send({ name: 'Alice', email: 'someone@else.com', ...EV001 });
-    expect(response.status).toBe(400);
-  });
+describe('profile', () => {
+  beforeEach(seedOwners);
 
   it('reads and updates the profile, ignoring nothing silently', async () => {
     const app = apiApp();
-    expect((await request(app).get('/v1/me').set(bearer('alice'))).status).toBe(404);
-    await request(app)
-      .post('/v1/me/profile')
-      .set(bearer('alice'))
-      .send({ name: 'Alice', ...EV001 });
+    const missing = await request(app).get('/v1/me').set(bearer('nobody'));
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('profile_not_found');
+    const me = await request(app).get('/v1/me').set(bearer('alice'));
+    expect(me.body).not.toHaveProperty('passwordHash');
 
     const updated = await request(app).patch('/v1/me').set(bearer('alice')).send({
       name: 'Alice K',
@@ -225,11 +163,6 @@ describe('sign-up and profile', () => {
 
   it('stores a JPEG or PNG photo and rejects fakes and oversized files', async () => {
     const app = apiApp();
-    await request(app)
-      .post('/v1/me/profile')
-      .set(bearer('alice'))
-      .send({ name: 'Alice', ...EV001 });
-
     const saved = await request(app)
       .put('/v1/me/photo')
       .set(bearer('alice'))

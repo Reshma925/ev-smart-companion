@@ -1,9 +1,9 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
+import '../services/auth_service.dart';
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../services/distance_unit_service.dart';
@@ -55,7 +55,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadDistanceUnitPreference() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = AuthService().currentUser?.uid;
     if (uid == null) return;
     try {
       final profile = await dataService.getUserProfile(uid);
@@ -76,28 +76,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<_DashboardIdentity> _loadDashboardIdentity() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = AuthService().currentUser?.uid;
     if (uid == null) throw StateError('Please log in to load your dashboard.');
 
     final profile = await dataService.getUserProfile(uid);
     final vehicleId = profile?.vehicleId;
     if (profile == null || vehicleId == null || vehicleId.isEmpty) {
-      throw StateError(
-        'Your Firestore user profile has no registered vehicle.',
-      );
+      throw StateError('Your user profile has no registered vehicle.');
     }
     if (vehicleId != widget.vehicle.id) {
-      throw StateError(
-        'The selected vehicle does not match your Firestore profile.',
-      );
+      throw StateError('The selected vehicle does not match your profile.');
     }
 
-    // Re-read authoritative identity from Firestore each time the dashboard opens.
+    // Re-read authoritative identity from the backend each time the dashboard opens.
     final vehicle = await dataService.getVehicleById(vehicleId);
     if (vehicle == null) {
-      throw StateError(
-        'Your registered vehicle is missing or inactive in Firestore.',
-      );
+      throw StateError('Your registered vehicle is missing or inactive.');
     }
     await _vehicleSubscription?.cancel();
     _latestVehicle = vehicle;
@@ -110,7 +104,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (updatedVehicle == null) {
               setState(
                 () => _vehicleStreamError =
-                    'The registered vehicle is no longer available in Firestore.',
+                    'The registered vehicle is no longer available.',
               );
               return;
             }
@@ -123,7 +117,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (!mounted) return;
             setState(
               () => _vehicleStreamError =
-                  'Could not refresh vehicle data from Firestore: $error',
+                  'Could not refresh vehicle data: $error',
             );
           },
         );
@@ -162,7 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> openLearn() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = AuthService().currentUser?.uid;
     if (uid == null) return;
     setState(() => navIndex = 2);
     await Navigator.push(
@@ -193,7 +187,7 @@ class _HomeScreenState extends State<HomeScreen> {
               return _LoadError(
                 message:
                     identitySnapshot.error?.toString() ??
-                    'Could not load your Firestore vehicle profile.',
+                    'Could not load your vehicle profile.',
                 onRetry: retryLoadingIdentity,
               );
             }

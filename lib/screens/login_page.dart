@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../app_theme.dart';
 import '../services/auth_service.dart';
 import '../widgets/common_widgets.dart';
-import 'forgot_password_page.dart';
 import 'signup_page.dart';
 
 typedef EmailLoginAction = Future<void> Function(String email, String password);
@@ -40,13 +39,11 @@ class _LoginPageState extends State<LoginPage> {
       if (action != null) {
         await action(identityController.text, passwordController.text);
       } else {
-        final credential = await authService.signInWithEmail(
+        // On success AuthGate sees the new session and opens the app.
+        await authService.signInWithEmail(
           email: identityController.text,
           password: passwordController.text,
         );
-        if (credential.user == null) {
-          throw StateError('Firebase returned no user.');
-        }
       }
     } catch (error) {
       if (mounted) {
@@ -55,26 +52,6 @@ class _LoginPageState extends State<LoginPage> {
           widget.errorMessageBuilder?.call(error) ??
               authService.messageFor(error),
           title: 'Login failed',
-        );
-      }
-    } finally {
-      if (mounted) setState(() => isLoading = false);
-    }
-  }
-
-  Future<void> continueWithGoogle() async {
-    if (isLoading) return;
-    setState(() => isLoading = true);
-    try {
-      final credential = await authService.signInWithGoogle();
-      if (credential?.user == null) return;
-    } catch (error) {
-      if (mounted) {
-        await showErrorDialog(
-          context,
-          widget.errorMessageBuilder?.call(error) ??
-              '${authService.messageFor(error)}\n\nDetails: $error',
-          title: 'Google sign-in failed',
         );
       }
     } finally {
@@ -137,77 +114,12 @@ class _LoginPageState extends State<LoginPage> {
                       ? 'Enter your password'
                       : null,
                 ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: isLoading
-                        ? null
-                        : () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const ForgotPasswordPage(),
-                            ),
-                          ),
-                    child: const Text(
-                      'Forgot Password?',
-                      style: TextStyle(
-                        color: AppTheme.blue,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
+                const SizedBox(height: 18),
                 const SizedBox(height: 5),
                 PrimaryButton(
                   label: 'Log In',
                   onPressed: login,
                   isLoading: isLoading,
-                ),
-                const SizedBox(height: 29),
-                Row(
-                  children: [
-                    const Expanded(child: Divider(color: Color(0xFFD9E0E8))),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 15),
-                      child: Text(
-                        'OR',
-                        style: TextStyle(
-                          color: Colors.grey.shade600,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                    const Expanded(child: Divider(color: Color(0xFFD9E0E8))),
-                  ],
-                ),
-                const SizedBox(height: 22),
-                SizedBox(
-                  width: double.infinity,
-                  height: 52,
-                  child: OutlinedButton.icon(
-                    onPressed: isLoading ? null : continueWithGoogle,
-                    icon: isLoading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(
-                            Icons.g_mobiledata,
-                            size: 28,
-                            color: Colors.black,
-                          ),
-                    label: Text(
-                      isLoading ? 'Please wait…' : 'Continue with Google',
-                      style: const TextStyle(color: AppTheme.navy),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0xFFD9E0E8)),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                  ),
                 ),
                 const SizedBox(height: 24),
                 Center(

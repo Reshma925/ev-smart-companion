@@ -13,17 +13,17 @@ void main() {
   testWidgets('switching the connected vehicle updates its card stream', (
     tester,
   ) async {
-    final firestore = _SwitchableDataService();
-    addTearDown(firestore.dispose);
+    final dataService = _SwitchableDataService();
+    addTearDown(dataService.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: dataService),
         ),
       ),
     );
 
-    firestore.select(_vehicle('EV001', 'First EV'));
+    dataService.select(_vehicle('EV001', 'First EV'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(DropdownButtonFormField<String>).first);
     await tester.pumpAndSettle();
@@ -38,17 +38,17 @@ void main() {
   testWidgets('registration lists all vehicles linked to the user', (
     tester,
   ) async {
-    final firestore = _SwitchableDataService()..hasCard = false;
-    addTearDown(firestore.dispose);
+    final dataService = _SwitchableDataService()..hasCard = false;
+    addTearDown(dataService.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: dataService),
         ),
       ),
     );
 
-    firestore.select(_vehicle('EV001', 'First EV'));
+    dataService.select(_vehicle('EV001', 'First EV'));
     await tester.pumpAndSettle();
     await tester.tap(
       find.widgetWithText(FilledButton, 'Register Charging Card'),
@@ -64,16 +64,16 @@ void main() {
   testWidgets('registration sends only the last four card digits', (
     tester,
   ) async {
-    final firestore = _SwitchableDataService()..hasCard = false;
-    addTearDown(firestore.dispose);
+    final dataService = _SwitchableDataService()..hasCard = false;
+    addTearDown(dataService.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: dataService),
         ),
       ),
     );
-    firestore.select(_vehicle('EV001', 'First EV'));
+    dataService.select(_vehicle('EV001', 'First EV'));
     await tester.pumpAndSettle();
     await tester.tap(
       find.widgetWithText(FilledButton, 'Register Charging Card'),
@@ -100,34 +100,34 @@ void main() {
     await tester.tap(find.text('Register Card'));
     await tester.pumpAndSettle();
 
-    expect(firestore.registeredCardLastFour, ['1234']);
+    expect(dataService.registeredCardLastFour, ['1234']);
   });
 
   testWidgets('charging card section follows the currently connected vehicle', (
     tester,
   ) async {
-    final firestore = _SwitchableDataService();
-    addTearDown(firestore.dispose);
+    final dataService = _SwitchableDataService();
+    addTearDown(dataService.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: dataService),
         ),
       ),
     );
 
-    firestore.select(_vehicle('EV001', 'First EV'));
+    dataService.select(_vehicle('EV001', 'First EV'));
     await tester.pumpAndSettle();
     expect(find.text('First EV\nREG-001\nEV001'), findsWidgets);
     expect(find.text('XXXX XXXX XXXX 1111'), findsWidgets);
 
-    firestore.select(_vehicle('EV002', 'Second EV'));
+    dataService.select(_vehicle('EV002', 'Second EV'));
     await tester.pumpAndSettle();
     expect(find.text('Second EV\nREG-002\nEV002'), findsWidgets);
     expect(find.text('XXXX XXXX XXXX 2222'), findsWidgets);
     expect(find.text('XXXX XXXX XXXX 1111'), findsNothing);
 
-    firestore.select(_vehicle('EV001', 'First EV'));
+    dataService.select(_vehicle('EV001', 'First EV'));
     await tester.pumpAndSettle();
     expect(find.text('First EV\nREG-001\nEV001'), findsWidgets);
     expect(find.text('XXXX XXXX XXXX 1111'), findsWidgets);
@@ -137,17 +137,17 @@ void main() {
   testWidgets('hides a card whose stored vehicle details do not match', (
     tester,
   ) async {
-    final firestore = _SwitchableDataService()..mismatchCard = true;
-    addTearDown(firestore.dispose);
+    final dataService = _SwitchableDataService()..mismatchCard = true;
+    addTearDown(dataService.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: ChargingCardSection(uid: 'user-1', dataService: firestore),
+          body: ChargingCardSection(uid: 'user-1', dataService: dataService),
         ),
       ),
     );
 
-    firestore.select(_vehicle('EV001', 'First EV'));
+    dataService.select(_vehicle('EV001', 'First EV'));
     await tester.pumpAndSettle();
 
     expect(

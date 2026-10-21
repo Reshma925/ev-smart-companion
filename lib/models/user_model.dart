@@ -94,11 +94,13 @@ class PendingSignup {
     required this.name,
     required this.email,
     required this.mobile,
-    this.password,
+    required this.password,
+    this.city = '',
   });
 
   final String name;
   final String email;
   final String mobile;
-  final String? password;
+  final String city;
+  final String password;
 }

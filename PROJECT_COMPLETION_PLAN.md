@@ -40,7 +40,7 @@ Never delete functionality or tests to make things pass. Fix root causes. Don't 
 Be honest about verification. Never claim something works unless you ran it. Physical Bluetooth can only be marked working after a real phone + Chrome test (Phase 13). Otherwise write NOT VERIFIED. Never fabricate results.
 No errors at the end. Every checkpoint must pass with no errors, failures or analyzer issues.
 Architecture rules (do not break)
-Login stays on Firebase Authentication (email/password, Google, password reset). Don't replace it.
+Login uses our own backend: email + password stored in MongoDB (bcrypt/bcryptjs hash), JWT access token (15 min) + rotating refresh token (7 days, stored only as a hash, reuse revokes all). No Firebase anywhere. (Decision 2026-10-21; replaces the earlier rule "Login stays on Firebase Authentication".)
 Live vehicle measurements come only from Bluetooth (BLE). Battery, speed, range, charging, doors and every other live measurement come from the simulator over BLE, through the existing decoder and validation, into the single shared `VehicleBleClient.shared`, and from there to every screen. Never use mock, random, hardcoded, cached-as-current or database values for live measurements, in production or as a fallback. If the simulator doesn't send a value, show N/A. The new backend does not store or serve telemetry.
 Don't change the BLE protocol: UUIDs, service filters, framing, chunking, field definitions, central/peripheral roles. Don't create a second BLE connection. Don't move the connection into a single screen.
 Use the existing code as the reference. The old Firebase backend (`functions/index.js`, `functions/card_backend.js`, `functions/learning_assistant.js`, `functions/test/*`) and `firestore.rules` contain the business rules. Port the same behaviour to the new backend. Don't invent different rules.
@@ -48,24 +48,24 @@ Use the existing code as the reference. The old Firebase backend (`functions/ind
 The big picture
 Current state of the project
 Front end: Flutter app in `lib/`. All screens exist.
-Login: Firebase Auth. Stays.
+Login: was Firebase Auth. Replaced by our own backend login (MongoDB + JWT) in Phase 12b.
 Data: Firebase Firestore + Cloud Functions (`functions/`). Replaced by `backend/` + MongoDB in Parts C–D.
 Car data: `vehicle_simulator/` (an Android app) acts as the car and sends data over BLE to the main app. Chrome on a laptop uses Web Bluetooth. Stays.
 Maps, chargers, routes, weather: free public APIs (OpenStreetMap, Overpass, OSRM, Nominatim, Photon, Open-Meteo). Stay.
 Known front-end bugs (from the team's review document): Login sometimes never appears, the vehicle selection / Bluetooth chooser disappears, and BLE + live telemetry must keep working across screens. Fixed in Part A.
 Final architecture
 ```
-                    login token (Firebase ID token)
+              our JWT (login, signup, refresh via /v1/auth)
  ┌──────────────────────┐ ───── HTTPS + JSON ─────▶ ┌──────────────────────────┐      ┌────────────────┐
  │ Flutter app (lib/)   │                            │ backend/  (Node.js API)  │ ───▶ │ MongoDB Atlas  │
- │ Chrome / Android     │ ◀───────────────────────── │ hosted on Render         │      │ (database)     │
- └──┬───────────────┬───┘                            └──────┬─────────────┬─────┘      └────────────────┘
-    │ login only    │ live car data (BLE only)              │             │
-    ▼               ▼                                       ▼             ▼
-┌───────────────┐ ┌───────────────────────┐          ┌────────────┐ ┌────────────────┐
-│ Firebase Auth │ │ vehicle_simulator     │          │ Gemini AI  │ │ PayPal Sandbox │
-└───────────────┘ │ (Android phone, BLE)  │          └────────────┘ └────────────────┘
-                  └───────────────────────┘
+ │ Chrome / Android     │ ◀───────────────────────── │ hosted on Render         │      │ (database,     │
+ └──────────┬───────────┘                            └──────┬─────────────┬─────┘      │  users + data) │
+            │ live car data (BLE only)                      │             │            └────────────────┘
+            ▼                                               ▼             ▼
+  ┌───────────────────────┐                          ┌────────────┐ ┌────────────────┐
+  │ vehicle_simulator     │                          │ Gemini AI  │ │ PayPal Sandbox │
+  │ (Android phone, BLE)  │                          └────────────┘ └────────────────┘
+  └───────────────────────┘
 ```
 Why the app never talks to MongoDB directly: the database password would be inside the app, and anyone can extract it from an APK. The backend keeps every secret.
 Chosen stack (decided, don't change)
@@ -74,7 +74,7 @@ Database	MongoDB Atlas free M0 (document database like Firestore, 512 MB free, s
 Backend	Node.js 22 LTS + TypeScript + Express 5
 DB library	Mongoose
 Validation	Zod (strict schemas on every request)
-Login check	firebase-admin `verifyIdToken` (needs only the project ID, no service-account key)
+Login check	bcryptjs (password hashes) + jose (JWT access tokens); env `JWT_SECRET` (≥ 32 characters, only in `backend/.env` and Render)
 Security	helmet, cors, express-rate-limit, Mongoose `sanitizeFilter`
 Logging	pino (secrets redacted)
 Backend tests	Vitest + Supertest + mongodb-memory-server (`MongoMemoryReplSet`, needed for transactions)
@@ -117,7 +117,6 @@ Extract to `C:\flutter` (not inside Program Files) and add `C:\flutter\bin` to P
 Android Studio: https://developer.android.com/studio. Open it once and let it install the Android SDK. Then More Actions → SDK Manager → SDK Tools → tick Android SDK Command-line Tools → Apply.
 Google Chrome (needed for Web Bluetooth).
 VS Code + the Flutter and Dart extensions.
-Firebase CLI, which the old backend needs until Part D. In a terminal: `npm install -g firebase-tools`, then `firebase login`.
 🧑‍🎓 STUDENT ACTION 0.2: Turn on Windows Developer Mode
 Flutter needs it for plugins on Windows.
 Press Win + R, type `ms-settings:developers`, press Enter.
@@ -130,7 +129,6 @@ node --version        # must start with v22
 flutter --version     # Dart must be 3.12.2 or newer
 flutter doctor --android-licenses   # answer y to everything
 flutter doctor        # Flutter, Android toolchain, Chrome, VS Code must show ✓
-firebase --version
 ```
 "Visual Studio" may show ✗. That's fine.
 🧑‍🎓 STUDENT ACTION 0.4: Hardware for the Bluetooth demo
@@ -142,7 +140,7 @@ On the phone: Settings → About phone → tap Build number 7 times, then Develo
 PART A: FIX THE FRONT-END BUGS (do this first)
 Goal: this journey must work end to end:
 App launch → Login → (Sign Up if needed) → successful login → Vehicle connection screen → Connect Vehicle → Chrome's Bluetooth chooser → real BLE connection → live data on every screen → Logout → Login.
-This is a recovery, not a rewrite. Keep Firebase Auth, Firestore (until Part D), the BLE implementation and the shared telemetry.
+This is a recovery, not a rewrite. Keep the existing login (until Phase 12b), Firestore (until Part D), the BLE implementation and the shared telemetry.
 Phase 1: Protect the work and audit
 Agent steps:
 Confirm the repository root (`git rev-parse --show-toplevel`) and current branch.
@@ -181,7 +179,7 @@ Fresh unauthenticated launch: splash → Login. No protected screen flashes.
 Failed login stays on Login and shows the error. Successful login navigates through `AuthGate` (`LoginPage` itself must not push protected pages).
 Sign Up → "Log In" link returns to Login. Failed sign-up stays on Sign Up with the error.
 Logout from Profile goes to `AuthGate` → Login, and the BLE session is disconnected.
-A restored Firebase session may skip Login (that's the product policy). A cached vehicle record, a BLE connection or a stored boolean must never count as authentication.
+Since Phase 12b, tokens live in memory only, so every launch and every F5 shows Login (that's the product policy). A cached vehicle record, a BLE connection or a stored boolean must never count as authentication.
 Nothing calls `requestDevice` / `VehicleBleClient.start` before login.
 Debug-build requirement (document it, don't remove it)
 In debug builds `main.dart` sends Cloud Functions calls to the local emulator. Until Part D replaces Cloud Functions, Sign Up in debug needs the emulator running (Phase 3 shows how). Keep this behaviour. Part D removes it.
@@ -229,7 +227,7 @@ Phase 5: First real-device check of Part A
 🧑‍🎓 STUDENT ACTION 5.1: Run the three programs (the agent guides you)
 Each in its own VS Code terminal (Terminal → New Terminal), from the project folder:
 ```powershell
-# Terminal 1: Firebase Functions emulator (needed for Sign Up until Part D)
+# Terminal 1: Firebase Functions emulator (historical: Part A only; from Phase 12 use `cd backend; npm run dev`)
 cd functions; npm install; cd ..
 firebase emulators:start --only functions --project smart-ev-learning-companion
 
@@ -264,7 +262,6 @@ Agent steps (fix each, tick it in the Progress Log):
 Committed `node_modules`. Over 5,000 files from `tools/firestore_seed/node_modules` are in git. Run `git rm -r --cached tools/firestore_seed/node_modules` and add `node_modules/` to the root `.gitignore`.
 `.gitignore` must contain: `.env`, `*.env`, `!.env.example`, `backend/.env`, `node_modules/`, `backend/dist/`, `*.keystore`, `*.jks`, `key.properties`.
 Search for secrets in `lib/`, `android/`, `web/` and `ios/` (patterns: `AIza`, `secret`, `password =`, `Bearer `, `sk-`, `client_secret`).
-Firebase `apiKey` values in `lib/firebase_options.dart` and `android/app/google-services.json` are public identifiers, not secrets. Leave them, but do 🧑‍🎓 6.A.
 Any real secret (Gemini key, PayPal secret) must be moved out of the app.
 Card data. `registerChargingCard` currently receives a full `cardNumber`. Change the app so only the last 4 digits and the masked number (`XXXX XXXX XXXX 1234`) ever leave the device. Never send or store a full card number, CVV, PIN or payment password. If any screen asks for CVV or PIN, remove that field.
 Logs. Remove or redact `print` / `debugPrint` calls that output tokens, emails, phone numbers, card or payment details, or full API responses. The BLE stage logs are fine (no personal data).
@@ -274,12 +271,6 @@ Form validation. Signup, login, profile, maintenance and card forms: every field
 Profile photo. Only JPEG/PNG, resized to ≤ 512×512 (`image_picker`: `maxWidth`, `maxHeight`, `imageQuality`).
 Dependencies. Run `flutter pub outdated`. Upgrade anything with a security advisory if the build stays green.
 Known limitation (record only): the simulator accepts commands from any connected device. Acceptable for the demo. Don't change the protocol.
-🧑‍🎓 STUDENT ACTION 6.A: Restrict the Firebase API keys (about 5 minutes)
-https://console.cloud.google.com → project smart-ev-learning-companion → APIs & Services → Credentials.
-Android key → Application restrictions: Android apps → add package `com.example.flutter_application_2` + your debug SHA-1. The agent shows you how: `cd android; ./gradlew signingReport`.
-Browser key → Websites → add `http://localhost:*` (and your hosted web URL later).
-API restrictions for both: only Identity Toolkit API and Token Service API.
-If you're not an owner of this Firebase project, ask the owner (repo owner Reshma925) to do it or to make you an Editor.
 ✅ Checkpoint 6: `flutter analyze` clean, `flutter test` all pass, every item ticked.
 ---
 PART C: BACKEND + DATABASE (MongoDB)
@@ -299,9 +290,12 @@ https://developer.paypal.com → log in or sign up.
 Apps & Credentials → select Sandbox → Create App → name `EV Smart Companion`, type Merchant.
 Copy the Client ID and Secret and keep them for 7.5.
 Testing Tools → Sandbox Accounts: note the Personal test account's email and password (you'll "pay" with it).
-🧑‍🎓 STUDENT ACTION 7.4: Firebase Auth check
-https://console.firebase.google.com → smart-ev-learning-companion → Authentication → Sign-in method: Email/Password and Google must be Enabled. Settings → Authorized domains must include `localhost`. If you can't open the project, ask the owner to add you as Editor.
-> Agent note: the backend needs only the Firebase **project ID** `smart-ev-learning-companion`. Don't ask for a service-account key.
+🧑‍🎓 STUDENT ACTION 7.4: Generate `JWT_SECRET` (about 1 minute)
+In a VS Code terminal (PowerShell), run this once. It appends a random 64-byte secret to `backend/.env` without showing it on screen:
+```powershell
+node -e "require('fs').appendFileSync('C:/Users/pradh/ev-smart-companion-fresh/backend/.env', '\nJWT_SECRET=' + require('crypto').randomBytes(64).toString('base64url') + '\n')"
+```
+Never paste it in the chat. On Render (Phase 15) generate a different one the same way and enter it in the dashboard. Changing it logs everyone out.
 Agent steps
 Create `backend/` and `backend/.env.example` (placeholders only):
 ```
@@ -309,7 +303,7 @@ Create `backend/` and `backend/.env.example` (placeholders only):
    PORT=8081
    MONGODB_URI=mongodb+srv://ev_app:REPLACE_ME@REPLACE_ME.mongodb.net/?retryWrites=true&w=majority
    MONGODB_DB_NAME=ev_companion
-   FIREBASE_PROJECT_ID=smart-ev-learning-companion
+   JWT_SECRET=REPLACE_ME_WITH_7.4_COMMAND
    CORS_ORIGINS=http://localhost:5100,http://localhost:5000
    GEMINI_API_KEY=REPLACE_ME
    GEMINI_MODEL=<copy the model used in functions/learning_assistant.js>
@@ -327,7 +321,7 @@ Phase 8: Backend skeleton
 Agent steps:
 In `backend/`: `npm init -y`, then set `"type": "module"`, `"private": true` and `"engines": { "node": ">=22" }`.
 Install the latest stable versions:
-deps: `express mongoose zod firebase-admin helmet cors express-rate-limit pino pino-http`
+deps: `express mongoose zod bcryptjs jose helmet cors express-rate-limit pino pino-http`
 devDeps: `typescript tsx @types/node @types/express @types/cors vitest supertest @types/supertest mongodb-memory-server eslint @eslint/js typescript-eslint prettier`
 `tsconfig.json`: `strict`, `noUncheckedIndexedAccess`, target ES2022, module/moduleResolution `NodeNext`, `rootDir: src`, `outDir: dist`.
 Scripts:
@@ -354,7 +348,7 @@ a global rate limit (300 requests / 15 min / IP)
 feature routes under `/v1`
 a 404 handler and a central error handler returning `{ "error": { "code", "message" } }`. No stack traces or internal messages in production.
 `src/server.ts`: env → DB → `createApp()` → `listen(PORT)` → clean shutdown on SIGTERM.
-`src/middleware/auth.ts` → `requireAuth`: read `Authorization: Bearer <Firebase ID token>`, verify with firebase-admin (`initializeApp({ projectId })`, `getAuth().verifyIdToken`), and set `req.user = { uid, email, emailVerified }`. Missing or invalid token → `401`. The verifier must be injectable for tests.
+`src/middleware/auth.ts` → `requireAuth`: read `Authorization: Bearer <our JWT access token>`, verify it with jose (`jwtVerify`, HS256, `JWT_SECRET`, issuer/audience checked, 15 min expiry), and set `req.user = { uid: <user ID>, email }`. Missing, invalid or expired token → `401`. The verifier must be injectable for tests.
 `src/middleware/validate.ts`: Zod for body, params and query with `.strict()` (unknown fields → `400`, friendly message).
 ESLint + Prettier config, and `backend/README.md` (how to run, test and seed).
 Tests: a shared setup with `MongoMemoryReplSet`; health → 200; no token → 401; bad token → 401; fake valid token → passes.
@@ -362,7 +356,7 @@ Tests: a shared setup with `MongoMemoryReplSet`; health → 200; no token → 40
 Phase 9: Database design (MongoDB collections)
 Rules: use `timestamps: true`; trimmed strings with `maxlength`; money stored as whole paise (₹1 = 100), converted to rupees in API responses (the Flutter models use `double`); never store full card numbers, CVV, PIN or passwords; build indexes on startup in development. No telemetry collection, because live data is BLE-only (Rule 15).
 Collection	`_id`	Fields (match the Flutter models in `lib/models/`)	Indexes and rules
-`users`	Firebase UID	name, email, phone, city, dateOfBirth, profileImageUrl, preferredDrivingMode, preferredChargingMode, notificationPreference, distanceUnit, notificationsEnabled, locationEnabled, connectedVehicleId, vehicleRegistrationNumber	email index
+`users`	user ID (generated by the backend)	email (unique, lowercase, trimmed), passwordHash (bcrypt; `select: false`, never returned by any endpoint), name, phone, city, dateOfBirth, profileImageUrl, preferredDrivingMode, preferredChargingMode, notificationPreference, distanceUnit, notificationsEnabled, locationEnabled, connectedVehicleId, vehicleRegistrationNumber	unique email index
 `vehicles`	vehicle ID, e.g. `EV001`	registrationNumber (normalised: uppercase, no spaces), model, ownerName, vin (uppercase), bluetoothDeviceId, bluetoothDeviceName, isActive, batteryCapacityKwh, maximumRangeKm, connectorType, ownerUid (null until claimed)	unique registrationNumber; unique vin; index ownerUid. One owner per vehicle, claimed atomically with `findOneAndUpdate({ _id, ownerUid: null, isActive: true }, { ownerUid })` (replaces `vehicleClaims`)
 `maintenanceRecords`	ObjectId	vehicleId, createdByUid, serviceType, category, serviceDate, nextServiceDate, odometerKm, costPaise, serviceCenter, notes, status `Completed`, source `user_entered`	`{ vehicleId: 1, serviceDate: -1 }`
 `controlsPreferences`	`${uid}:${vehicleId}`	uid, vehicleId, preferences (same keys and limits as `validVehicleControlsPreferences` in `firestore.rules`: ≤ 20 passenger profiles, ≤ 50 alerts, ≤ 32 active alert keys)	
@@ -370,15 +364,21 @@ Collection	`_id`	Fields (match the Flutter models in `lib/models/`)	Indexes and 
 `cardTransactions`	ObjectId	cardId, uid, vehicleId, type `RECHARGE`/`DEBIT`, amountPaise, balanceBeforePaise, balanceAfterPaise, status, description, stationId, stationName, operator, sessionReferenceId, paymentProvider, paymentMethod, paypalOrderId, paypalCaptureId, paypalAmountCents, paypalCurrency, conversionType, demoExchangeRate	`{ cardId: 1, createdAt: -1 }`; unique sparse paypalOrderId and paypalCaptureId (no double credit)
 `paypalOrders`	PayPal order ID	uid, vehicleId, cardId, amountPaise, usdAmountCents, status `CREATED` → `CAPTURED`, capturedAt	
 `chargingSessions`	session ID	uid, vehicleId, stationId, stationName, operator, energyKwh, amountPaise, status `CONFIRMED` → `DEBITED`, debitedAt	mirror `debitConfirmedChargingSession` in `functions/card_backend.js`
-`profilePhotos`	Firebase UID	contentType (`image/jpeg` or `image/png`), data (Binary, ≤ 300 KB)	replaces Firebase Storage
+`refreshTokens`	ObjectId	tokenHash (SHA-256 of the token; the raw token is never stored), userId, expiresAt (7 days), revokedAt	unique tokenHash; index userId; TTL index on expiresAt. Each refresh revokes the old token and issues a new one; presenting a revoked token revokes all of that user's tokens
+`profilePhotos`	user ID	contentType (`image/jpeg` or `image/png`), data (Binary, ≤ 300 KB)	replaces Firebase Storage
 Agent steps: one model file per collection in `src/models/`, plus `test/models.test.ts` (duplicates rejected, negative balance rejected, bad masked number rejected).
 ✅ Checkpoint 9: lint, typecheck and test all pass.
 Phase 10: API endpoints
-All routes except `/health` use `requireAuth`. Every route with a `vehicleId` must check `vehicle.ownerUid === req.user.uid`, through one shared helper `requireOwnedVehicle`. Return `404` for someone else's vehicle. This replaces `firestore.rules`.
+All routes except `/health`, `POST /v1/auth/signup`, `/v1/auth/login`, `/v1/auth/refresh` and `/v1/auth/logout` use `requireAuth`. Every route with a `vehicleId` must check `vehicle.ownerUid === req.user.uid`, through one shared helper `requireOwnedVehicle`. Return `404` for someone else's vehicle. This replaces `firestore.rules`.
 Old (Firestore or Cloud Function)	New endpoint	Notes
-`verifyAndCreateUserProfile`	`POST /v1/me/profile`	Sign-up: verify the vehicle (same checks as `card_backend.js`), claim it and create the user, in one transaction
+Firebase `createUserWithEmailAndPassword` + `verifyAndCreateUserProfile`	`POST /v1/auth/signup`	Body: user details + email + password (min 8 chars) + vehicle details. Hash the password, verify the vehicle (same checks as `card_backend.js`), claim it and create the user in ONE transaction; any failure saves nothing. Duplicate email → `409`; already-linked vehicle → error. Returns `201 { message, vehicle }` without signing in: the app goes back to Login and the user logs in with the same email/password. Rate-limited per IP.
+Firebase `signInWithEmailAndPassword`	`POST /v1/auth/login`	`{email, password}` → `{ accessToken, refreshToken, user }`. Wrong email or wrong password → the same generic `401 invalid_credentials` (no "user not found"). Rate-limited per IP and per email. Compare against a dummy hash when the email doesn't exist (no timing leak).
+Firebase token refresh	`POST /v1/auth/refresh`	`{refreshToken}` → new access + refresh token; the old one is revoked. Reusing a revoked token revokes all of that user's tokens → `401`.
+Firebase `signOut`	`POST /v1/auth/logout`	`{refreshToken}` → revoke it. Always `204`.
+Firebase `updatePassword`	`POST /v1/auth/change-password`	`requireAuth`; `{currentPassword, newPassword}`. Revokes all refresh tokens, returns new tokens.
+`verifyAndCreateUserProfile`	`POST /v1/me/profile`	Removed (sign-up is `POST /v1/auth/signup`).
 `getUserProfile`, `watchUserProfile`	`GET /v1/me`	
-`updateUserProfile`	`PATCH /v1/me`	Only the fields allowed in `firestore.rules`. Email comes from the token.
+`updateUserProfile`	`PATCH /v1/me`	Only the fields allowed in `firestore.rules`. Email can't be changed here (sending `email` → `400`).
 photo upload (Firebase Storage) + `updateProfileImageUrl`	`PUT /v1/me/photo` `{contentType, base64}` (≤ 300 KB), `GET /v1/me/photo`	Check the real file type from the first bytes (JPEG/PNG magic numbers)
 `linkVerifiedVehicle`	`POST /v1/me/vehicles`	Verify and claim an extra vehicle
 `watchLinkedVehicles`	`GET /v1/me/vehicles`	
@@ -402,7 +402,8 @@ photo upload (Firebase Storage) + `updateProfileImageUrl`	`PUT /v1/me/photo` `{c
 Agent steps:
 Routes in `src/routes/`, logic in `src/services/`, and a strict Zod schema for every request.
 JSON field names must match the Flutter `fromMap` / `toMap` (camelCase). Dates are ISO-8601 strings.
-Use `mongoose.startSession()` + `withTransaction()` for sign-up/claim, PayPal capture and debit.
+Use `mongoose.startSession()` + `withTransaction()` for sign-up (user + vehicle claim), PayPal capture and debit.
+Auth tests: signup success; duplicate email → 409; already-linked vehicle → error and no user saved; login wrong password and unknown email return the identical generic error; login rate limit; refresh rotates; reusing an old refresh token → 401 and all tokens revoked; logout revokes; change-password; `passwordHash` never appears in any response; expired/tampered JWT → 401.
 PayPal and Gemini calls get a 15 s timeout. Map errors the way `functions/index.js` does, and never forward raw provider errors.
 Port the old tests from `functions/test/*.test.js` to Vitest (mock `fetch`). Add route tests for: the success path of every endpoint; `401` without a token; `404` when user A accesses user B's vehicle; `400` for bad bodies or extra fields; the same PayPal capture twice → credited once; debit with insufficient funds → error with the balance unchanged; claiming an already-claimed vehicle → error; sending a full `cardNumber` → `400`.
 ✅ Checkpoint 10: lint, typecheck, test and build pass. Give the students a short plain-English summary of every endpoint.
@@ -431,16 +432,23 @@ Agent steps:
    );
    ```
 Release builds must use `https://`. Add a startup check that warns in release if they don't.
-`lib/services/api/api_client.dart`: injectable `http.Client` and token provider (default `FirebaseAuth.instance.currentUser?.getIdToken()`); `get` / `post` / `put` / `patch` / `delete` adding `Authorization: Bearer` + JSON headers; 20 s timeout with one retry (Render wakes slowly); on `401`, refresh the token once (`getIdToken(true)`) and retry; `ApiException(statusCode, code, message)` with friendly messages ("No internet connection", "Server is waking up, please try again", "You don't have access to this vehicle"); never log tokens or bodies.
+`lib/services/api/api_client.dart`: injectable `http.Client` and token provider (default: the in-memory access token held by `AuthService`); `get` / `post` / `put` / `patch` / `delete` adding `Authorization: Bearer` + JSON headers; 20 s timeout with one retry (Render wakes slowly); on `401`, call `POST /v1/auth/refresh` once and retry; if that fails, sign out (→ Login); `ApiException(statusCode, code, message)` with friendly messages ("No internet connection", "Server is waking up, please try again", "You don't have access to this vehicle"); never log tokens or bodies.
 Rename `lib/services/firestore_service.dart` → `lib/services/data_service.dart` and `FirestoreService` → `DataService`, and update every import in `lib/` and `test/`. Rewrite each method to call its Phase 10 endpoint. Delete the legacy-card and Firestore-telemetry methods and simplify their callers.
 Replace the Firestore real-time streams. Each `watchX` still returns a `Stream`: fetch immediately; refetch every 15 s only while listened to; refetch right after any app write (a broadcast "changes" stream inside `DataService`); no duplicate emissions; cancel timers when the listener cancels; emit errors to the stream and keep retrying. Add pull-to-refresh only on list screens, in the existing style.
-Sign-up (`vehicle_details_page.dart`): after Firebase creates the account, call `POST /v1/me/profile`. Keep the existing rollback (delete the fresh Firebase user if profile creation wasn't attempted) and keep the Phase 2 sign-out escape hatch.
+Sign-up (`vehicle_details_page.dart`): (Phase 12b) one call to `POST /v1/auth/signup` with user details, password and vehicle details. No rollback is needed (the backend saves everything or nothing). After success, return to Login (the user logs in with the same email/password).
 Profile photo (`profile_page.dart`): replace Firebase Storage with `PUT /v1/me/photo`. Display it via `GET /v1/me/photo` (bytes through `ApiClient`, then `Image.memory`).
 Learning assistant: `POST /v1/assistant/ask` instead of `httpsCallable`.
 PayPal: use the new create and capture endpoints. Keep the web popup flow. Update `docs/paypal-checkout.md`.
 `main.dart`: remove the Cloud Functions emulator block (Functions are gone) and the `cloud_functions` import.
 Anything that uses `FirebaseFirestore.instance` directly (e.g. `vehicle_controls_page.dart`) must go through `DataService`.
-`pubspec.yaml`: remove `cloud_firestore`, `cloud_functions`, `firebase_storage` and `fake_cloud_firestore`. Keep `firebase_core`, `firebase_auth`, `google_sign_in` and all BLE packages. Run `flutter pub get`. Searching `lib/` and `test/` for those removed package names must return nothing.
+`pubspec.yaml`: remove `cloud_firestore`, `cloud_functions`, `firebase_storage` and `fake_cloud_firestore`. Keep all BLE packages. Run `flutter pub get`. Searching `lib/` and `test/` for those removed package names must return nothing.
+Phase 12b (login on our backend, decision 2026-10-21):
+`AuthService`: `signUp` → `POST /v1/auth/signup`; `signIn` → `POST /v1/auth/login`; `refresh` → `POST /v1/auth/refresh`; `changePassword` → `POST /v1/auth/change-password`; `signOut()` disconnects Bluetooth first, then `POST /v1/auth/logout`, then clears tokens. Exposes an auth-state stream for `AuthGate`.
+Tokens are kept in MEMORY ONLY (no shared_preferences, no localStorage, no secure storage), so Login shows on every launch and on F5.
+`AuthGate`, `LoginPage`, `SignUpPage`, `vehicle_details_page.dart` use the new `AuthService`. Same screen designs.
+Remove Google sign-in (button + code) and Forgot password (link + `forgot_password_page.dart`). Password reset by email is a known limitation.
+Remove `firebase_core`, `firebase_auth` and `google_sign_in` from `pubspec.yaml`, plus `Firebase.initializeApp` in `main.dart`.
+Tests: `AuthService` (login stores tokens in memory, signOut disconnects BLE before logout, refresh once on 401, failed refresh → signed out) and `AuthGate` (no token → Login).
 Tests: replace `fake_cloud_firestore` with `MockClient` (`package:http/testing.dart`) + a fake token provider, keeping each test's intent. Add `ApiClient` tests (header attached, 401 refresh, timeout message, error mapping) and one `watchX` stream test (emits, refetches after a write, stops on cancel). All Part A tests must still pass unchanged.
 Update `docs/vehicle-ble-demo.md`: the Functions emulator is no longer needed; the backend runs with `cd backend; npm run dev`.
 ✅ Checkpoint 12: `flutter pub get`, `flutter analyze` (No issues found!) and `flutter test` (all pass).
@@ -453,7 +461,12 @@ Fix any error in any terminal or in the Chrome console (F12).
 🧑‍🎓 STUDENT ACTION 13.1: Full checklist (report every result)
 Account and data (new backend):
 [ ] Sign up a new account with registration `TN01AB1234` (a second account uses `TN02CD5678`)
-[ ] Log out and log in again. Forgot password sends an email. Google sign-in works.
+[ ] After Sign Up, the app returns to Login; log in with the same email/password
+[ ] Log out and log in again
+[ ] Press F5 (or close and reopen the app) → Login appears
+[ ] Wrong password → a clear error, no login
+[ ] Sign up again with an email that already exists → a clear error
+[ ] Sign up with a vehicle that is already linked to another account → a clear error, and nothing is saved (that email can't log in)
 [ ] Profile: edit name, phone and city → reload → still saved. Photo upload → reload → still shown.
 [ ] Vehicle details show EV001
 [ ] Maintenance: add a record and it appears in the list
@@ -470,11 +483,10 @@ The agent records VERIFIED / NOT VERIFIED for each item in the Progress Log.
 ✅ Checkpoint 13: every item verified, or failures fixed and retested.
 Phase 14: Remove the old Firebase backend
 Agent steps:
-Delete `functions/`, `firestore.rules` and `tools/firestore_seed/`.
-In `firebase.json`, remove the `firestore`, `functions` and Firestore/Functions emulator sections. Keep the `flutter` section (Firebase Auth config).
+Delete ALL Firebase files: `functions/`, `firestore.rules`, `tools/firestore_seed/`, `firebase.json`, `.firebaserc`, `lib/firebase_options.dart`, `android/app/google-services.json`, and the Gradle `com.google.gms.google-services` plugin (in `android/settings.gradle.kts` and `android/app/build.gradle.kts`).
+Searching the repo (case-insensitive) for `firebase` must return nothing except docs and the Progress Log describing the removal.
 Rewrite `README.md`: what the app is, the architecture diagram, how to run the backend + simulator + app, and how to seed (`npm run seed`). Remove the old Firestore seeding text.
 Search the repo for `Firestore`, `Cloud Functions`, `firebase deploy` and `emulators:start`, and update any docs that are now outdated.
-🧑‍🎓 Optional later: in the Firebase console you can delete the Firestore database and Functions. Keep Authentication. Ask the project owner first.
 ✅ Checkpoint 14: the Phase 10 and Phase 12 checks still pass.
 ---
 PART E: DEPLOY, MOBILE, FINAL CHECKS
@@ -499,11 +511,11 @@ Phase 16: Make the mobile app solid (Android)
 Agent steps:
 Focus on Android. iOS needs a Mac + a paid Apple account, so skip it unless the students have both.
 Set the app label in `AndroidManifest.xml` to `EV Smart Companion`. If the students have an icon image, use `flutter_launcher_icons` (dev dependency).
-Package name `com.example.flutter_application_2` is rejected by Google Play. Change it only if the students will publish. That needs a new Android app in Firebase + a new `google-services.json` + the SHA-1 (as a STUDENT ACTION). Otherwise, record it as a known limitation.
+Package name `com.example.flutter_application_2` is rejected by Google Play. Change it only if the students will publish (`applicationId` + `namespace` in `android/app/build.gradle.kts` and the Kotlin package folder). Otherwise, record it as a known limitation.
 Every screen that loads backend data shows a loading state, a friendly error with Retry, and an empty state.
 After login, call `GET /health` in the background so Render starts waking early.
 Bluetooth and location permissions are requested only when the feature is opened, with a short explanation. Denying one shows a helpful message, never a crash.
-Release build: `isMinifyEnabled = true` and `isShrinkResources = true`, with ProGuard keep rules for Firebase and BLE. If the release APK breaks, turn minify off and record it.
+Release build: `isMinifyEnabled = true` and `isShrinkResources = true`, with ProGuard keep rules for BLE. If the release APK breaks, turn minify off and record it.
 Release signing: guide the students (STUDENT ACTION) to create an upload keystore with `keytool`, stored outside the repo, referenced from the git-ignored `android/key.properties`.
 Run on small and large phone emulators and fix any overflow (yellow/black stripes).
 🧑‍🎓 STUDENT ACTION 16.1: Test the app on your phone
@@ -527,17 +539,22 @@ Backend:
 [ ] Money in integer paise; PayPal capture and debit are transactional and idempotent
 [ ] A full card number, CVV or PIN is never accepted or stored
 [ ] Photo upload checks the real type and the size
+[ ] Passwords hashed with bcrypt; `passwordHash` never returned or logged
+[ ] Login rate-limited per IP and per email
+[ ] Login errors are generic (no "user not found" vs "wrong password")
+[ ] Refresh tokens rotate on every use, are stored only as hashes, and reuse revokes all of the user's tokens
+[ ] `JWT_SECRET` never committed (only in `backend/.env` and Render)
 [ ] `git log --all --full-history -- backend/.env` returns nothing
 Front end:
 [ ] No secrets in `lib/`, `android/`, `web/`
 [ ] Release builds use an `https://` API URL
-[ ] Firebase API keys restricted (6.A)
+[ ] Auth tokens kept in memory only (nothing in localStorage / shared_preferences)
 [ ] No logs of tokens or personal data
 [ ] Only `https:` links are opened
 [ ] Live measurements come only from BLE; no database or mock fallback (search for any reintroduced telemetry reads)
 [ ] All Phase 6 items still hold
 Whole repo:
-[ ] Install `gitleaks` (`winget install gitleaks`) and run `gitleaks detect --source . --verbose`. Firebase public `apiKey`s are expected. For any real leaked secret, the students must regenerate that key on the provider's website, then update `backend/.env` and Render.
+[ ] Install `gitleaks` (`winget install gitleaks`) and run `gitleaks detect --source . --verbose`. Old Firebase public `apiKey`s may still show in git history (public identifiers, not secrets). For any real leaked secret, the students must regenerate that key on the provider's website, then update `backend/.env` and Render.
 Phase 18: Final verification ("definition of done")
 The agent runs all of these. Every one must pass.
 ```powershell
@@ -591,8 +608,7 @@ Anything skipped goes under "Known limitations" in the Progress Log.
 ---
 Troubleshooting (for the agent when helping students)
 Problem	Fix
-Login never shows; stuck on "Complete Your Profile"	Use "Sign out and use another account" (Phase 2). Delete the half-created user in Firebase Console → Authentication, or finish onboarding.
-Sign Up fails at the vehicle step (before Part D)	The Functions emulator isn't running. Start Terminal 1 from Phase 5.1.
+Sign Up fails at the vehicle step	The backend isn't running (`cd backend; npm run dev`), or the vehicle is already linked to another account (run the reset script in development).
 Chrome chooser doesn't open	Use desktop Chrome on `localhost` or HTTPS, not inside an iframe. Laptop Bluetooth must be on. Check the Phase 3 fix is present.
 Chooser opens but the simulator isn't listed	The simulator isn't advertising, Bluetooth permissions were denied on the phone, or the phone is too far away. Restart advertising.
 "Identity mismatch"	The simulator's Vehicle ID must be the vehicle document ID (`EV001`), not the registration number.
@@ -602,7 +618,9 @@ Chooser opens but the simulator isn't listed	The simulator isn't advertising, Bl
 `MongoServerSelectionError` / timeout	IP not in Atlas Network Access, or special characters in the password need URL-encoding (`@`→`%40`, `#`→`%23`, `/`→`%2F`, `:`→`%3A`).
 `bad auth : authentication failed`	Wrong DB user or password. Reset it in Atlas → Database Access and update `.env`.
 Transactions fail in tests	Use `MongoMemoryReplSet`, not `MongoMemoryServer`.
-Every API call returns 401	Token missing, the Firebase project differs from `FIREBASE_PROJECT_ID`, or the PC clock is wrong.
+Every API call returns 401	`JWT_SECRET` was changed or the backend restarted with a different one, or the token expired and refresh failed. Log in again. Check `npm run check-env` shows `JWT_SECRET: present`.
+Login always says "Invalid email or password"	Wrong password, or the account was created before Phase 12b (old Firebase users were deleted by the reset script). Sign up again.
+Login says "Too many attempts"	Login rate limit hit. Wait 15 minutes or restart the backend in development.
 CORS error in Chrome	The web port (5100) isn't in `CORS_ORIGINS`.
 Phone can't reach `localhost`	`localhost` on a phone means the phone itself. Use the Render URL.
 First request takes about 50 s	Render free plan waking up. Open `/health` first.
@@ -610,7 +628,6 @@ First request takes about 50 s	Render free plan waking up. Open `/health` first.
 Dart SDK version error	Run `flutter upgrade`.
 PayPal "order not approved"	The popup was closed early, or a real PayPal account was used instead of the sandbox personal account.
 Gemini 400/403	Bad key. Create a new one, then update `.env` and Render.
-Google sign-in fails on Android	Add the debug SHA-1 in Firebase → Project settings → Android app (`cd android; ./gradlew signingReport`).
 ---
 Progress Log (the agent updates this after every phase)
 Baseline (Phase 1, 2026-10-21): repo root `C:\Users\pradh\ev-smart-companion-fresh` (not `C:\ev-smart-companion`). Started on `main` at 90035f8, working tree clean, so no snapshot commit was needed; branch `project-completion` created. `flutter analyze`: No issues found. `flutter test`: 108 passed, 0 failed. Tools: Git 2.54, Node v24.15 (LTS, satisfies `>=22`; kept instead of v22), Flutter 3.44.6 / Dart 3.12.2, Firebase CLI 15.33. Note: the plan was first pasted into `README.md` by mistake; it was moved here and README restored from HEAD.
@@ -629,13 +646,14 @@ Phase	Status	Notes
 3. Vehicle screen + chooser + BLE	☑	Added `_requireDeviceSelection` to `VehicleBleClient`: set on web disconnect (covers logout and vehicle switch), cleared on DEVICE_SELECTED; cancelled chooser no longer reconnects the old device. Vehicle-switch test now expects [true, true]; 2 new tests. 111 tests pass, analyzer clean. Scanning page already met all checks; no change. Protocol, UUIDs and link-loss reconnect untouched.
 4. Shared telemetry, real-data-only	☑	Verified: one client (`VehicleBleClient.shared`); Dashboard, Controls, Health, Charging, Trip, Maintenance, Profile, Vehicle details and Learn read it and match the snapshot vehicle ID; no screen uses Firestore telemetry readers or `Vehicle.batteryPercentage`/`health`. Fixed: Controls showed hardcoded 21 °C, fan 1, 80 % target and "Not charging" with no BLE state; now shows "—" (that page's existing unavailable marker). No widget tests yet for Dashboard/Controls/Charging/Trip: they read `FirebaseAuth.instance`/`FirestoreService()` directly; add them in Phase 12 once `DataService` is injectable. 111 tests pass; `flutter build web --release` OK.
 5. Real-device check (Part A)	☑	2026-10-21, students, on Firebase (Functions emulator + simulator on Android phone RZCW71C8QNZ + Chrome localhost:5100). VERIFIED: 1 fresh start shows Login (Incognito); 2 Sign Up -> Log In returns; 3 login -> Vehicle connection screen; 4 Connect opens chooser; 5 EV-Simulator-01 listed and paired; 6 status reaches "Connected · receiving live vehicle state"; 7 dashboard battery % follows simulator slider; 8 Controls/Health/Charging/Trip/Maintenance show same live values; 9 stop advertising -> disconnected/reconnecting; 10 restart -> reconnect with fresh values; 11 Disconnect -> Connect reopens chooser; 12 logout -> Login, login -> chooser reopens. NOT VERIFIED: onboarding "Sign out and use another account" button (no account got stuck on Complete Your Profile, so it was not exercised). Phase 0 hardware and Developer Mode confirmed by these runs.
-6. Front-end security	☑	6.A: pending – Punita will do it at the end (she has owner access). Until Phase 14 removes Firestore/Storage, the API restriction must also allow Cloud Firestore API and Cloud Storage for Firebase API; after Phase 14, only Identity Toolkit API and Token Service API. Android key SHA-1 (laptop debug keystore): 6C:8A:36:A7:29:C4:DA:A1:E9:4A:F1:19:2B:74:E2:1F:9E:4A:63:8C. [x] Untracked 5,103 files in tools/firestore_seed/node_modules; .gitignore now has node_modules/, .env, *.env, !.env.example, backend/.env, backend/dist/, *.keystore, *.jks, key.properties. [x] Secret scan of lib/android/web/ios: only Firebase public apiKeys (firebase_options.dart, google-services.json); no Gemini/PayPal secrets in the app. [x] Card form now passes only `cardLastFour` to the data layer (registerChargingCard/updateChargingCardDetails no longer take cardNumber); no CVV/PIN fields exist; new test. Legacy `cardNumber` read/cleanup in FirestoreService/ChargingCard stays until Part D removes legacy helpers. [x] Removed 17 debug logs printing email, UID, registration, model, UID paths and card document data (firestore_service.dart); remaining logs are error/status only. [x] Station website links: only https (http upgraded, other schemes rejected); PayPal approval already restricted to https sandbox.paypal.com; tel: phone button kept (app-built, not a URL; removing it would delete a feature). [x] Removed BLUETOOTH_ADVERTISE from main app manifest; no usesCleartextTraffic; network_security_config allows cleartext only to localhost/127.0.0.1. [x] Length limits via LengthLimitingTextInputFormatter (no visual change) on signup/login/forgot/profile/maintenance/vehicle config/card fields; signup phone now 10-15 digits; numbers >= 0 already enforced. [x] Profile photo: maxWidth/maxHeight 512, quality 85, JPEG/PNG checked by magic bytes. [x] `flutter pub outdated --json`: no package affected by an advisory, discontinued or retracted; no upgrade. Known limitation: simulator accepts commands from any connected device. 112 tests pass, analyzer clean.
-7. Accounts + secrets	☑	Atlas M0 cluster `ev-companion`, Gemini key, PayPal Sandbox app created by students. `backend/.env.example` added; `backend/.env` git-ignored and never read by the agent. `npm run check-env`: all 12 variables present. Deviation: the demo rate is named `DEMO_EXCHANGE_RATE_INR_TO_USD=0.012` (USD per INR, exactly as functions/card_backend.js) instead of `DEMO_INR_PER_USD`, whose name implies the inverse. GEMINI_MODEL=gemini-flash-latest (from learning_assistant.js). Students pasted keys into the chat once; agent did not reuse them and they regenerated the MongoDB password, Gemini key and PayPal secret. DB user is now `ev_app` (the first `_db_user` failed auth; students may delete it).
+6. Front-end security	☑	6.A: removed – no longer needed (Firebase removed, decision 2026-10-21). Earlier note: pending – Punita will do it at the end (she has owner access). Until Phase 14 removes Firestore/Storage, the API restriction must also allow Cloud Firestore API and Cloud Storage for Firebase API; after Phase 14, only Identity Toolkit API and Token Service API. Android key SHA-1 (laptop debug keystore): 6C:8A:36:A7:29:C4:DA:A1:E9:4A:F1:19:2B:74:E2:1F:9E:4A:63:8C. [x] Untracked 5,103 files in tools/firestore_seed/node_modules; .gitignore now has node_modules/, .env, *.env, !.env.example, backend/.env, backend/dist/, *.keystore, *.jks, key.properties. [x] Secret scan of lib/android/web/ios: only Firebase public apiKeys (firebase_options.dart, google-services.json); no Gemini/PayPal secrets in the app. [x] Card form now passes only `cardLastFour` to the data layer (registerChargingCard/updateChargingCardDetails no longer take cardNumber); no CVV/PIN fields exist; new test. Legacy `cardNumber` read/cleanup in FirestoreService/ChargingCard stays until Part D removes legacy helpers. [x] Removed 17 debug logs printing email, UID, registration, model, UID paths and card document data (firestore_service.dart); remaining logs are error/status only. [x] Station website links: only https (http upgraded, other schemes rejected); PayPal approval already restricted to https sandbox.paypal.com; tel: phone button kept (app-built, not a URL; removing it would delete a feature). [x] Removed BLUETOOTH_ADVERTISE from main app manifest; no usesCleartextTraffic; network_security_config allows cleartext only to localhost/127.0.0.1. [x] Length limits via LengthLimitingTextInputFormatter (no visual change) on signup/login/forgot/profile/maintenance/vehicle config/card fields; signup phone now 10-15 digits; numbers >= 0 already enforced. [x] Profile photo: maxWidth/maxHeight 512, quality 85, JPEG/PNG checked by magic bytes. [x] `flutter pub outdated --json`: no package affected by an advisory, discontinued or retracted; no upgrade. Known limitation: simulator accepts commands from any connected device. 112 tests pass, analyzer clean.
+7. Accounts + secrets	☑	7.4 (Firebase Auth check): removed – no longer needed (Firebase removed, decision 2026-10-21); replaced by the new 7.4 (generate JWT_SECRET), pending. Atlas M0 cluster `ev-companion`, Gemini key, PayPal Sandbox app created by students. `backend/.env.example` added; `backend/.env` git-ignored and never read by the agent. `npm run check-env`: all 12 variables present. Deviation: the demo rate is named `DEMO_EXCHANGE_RATE_INR_TO_USD=0.012` (USD per INR, exactly as functions/card_backend.js) instead of `DEMO_INR_PER_USD`, whose name implies the inverse. GEMINI_MODEL=gemini-flash-latest (from learning_assistant.js). Students pasted keys into the chat once; agent did not reuse them and they regenerated the MongoDB password, Gemini key and PayPal secret. DB user is now `ev_app` (the first `_db_user` failed auth; students may delete it).
 8. Backend skeleton	☑	Express 5.3, Mongoose 9.11, Zod 4.6, firebase-admin 14.5, TypeScript 6.0, Vitest 5.0, ESLint 10 (latest stable at install; npm audit 0 vulnerabilities). helmet, CORS allow-list (+ no-Origin), pino redaction, 300 req/15 min global limit, strict Zod `validate()` storing results on `req.valid` (Express 5 req.query is read-only), JSON errors without stack traces in production, injectable Firebase token verifier (project ID only), sanitizeFilter + strictQuery. `trust proxy` = 1 only in production (Render). lint, typecheck (includes tests via tsconfig.test.json), 11 tests, build all pass; `npm run dev` connected to Atlas and /health returned {"status":"ok"}.
 9. Database models	☑	9 Mongoose models in backend/src/models (users, vehicles, maintenanceRecords, controlsPreferences, chargingCards, cardTransactions, paypalOrders, chargingSessions, profilePhotos); no telemetry collection. Money in whole paise. Deviations to match the old code/Flutter (plan rule: port, don't invent): user's connected vehicle field is `vehicleId` (Flutter UserModel), not connectedVehicleId; transaction `type` is credit/debit with status completed (card_backend.js), not RECHARGE/DEBIT; sessions keep status `confirmed` + `debitStatus` pending/completed; PayPal orders PENDING -> COMPLETED with amountPaise/currency + paypalAmountCents/paypalCurrency/conversionType/demoExchangeRate. Extra safety: chargingCards schema uses strict 'throw' (a cardNumber/cvv field is rejected, not silently dropped); unique sparse sessionReferenceId on transactions (no double debit). 21 model tests; lint, typecheck, 32 tests pass.
 10. API endpoints	☑	All Phase 10 endpoints in backend/src/routes (me, vehicles, chargingCard, assistant) with logic in backend/src/services; strict Zod on every body/params/query; one `requireOwnedVehicle` helper (404 for others' vehicles, also checked first on PayPal capture). Transactions (`connection.transaction`) for sign-up claim+profile, PayPal credit and session debit; duplicate-key retry returns the already-completed result. PayPal and Gemini calls time out at 15 s (old Gemini was 25 s; plan says 15). Provider errors are logged with safe fields only; the app gets generic messages (old code returned PayPal issue details). Mongoose ValidationError/CastError -> 400. GET /v1/me returns 404 `profile_not_found` when no profile exists (app maps to null in Phase 12). PayPal create takes `{amountInr}` (card must be INR). Photo stored via document save (update validators mis-read Buffers). Not ported (features removed by the plan): legacy card migration tests and Firestore-rules-only tests. 106 tests: 401 sweep over all routes, 404 sweep over all vehicle routes, success paths, double capture (sequential and 3 concurrent) credits once, insufficient funds leaves balance unchanged, already-claimed vehicle, full cardNumber/cvv/pin -> 400, ported PayPal and Gemini tests. lint, typecheck, build pass; npm audit --omit=dev 0 vulnerabilities.
 11. Seed data	☑	`npm run seed` upserts EV001/EV002 (same identity and BLE names as tools/firestore_seed) and builds all indexes; never changes ownerUid and only fills range/connector when empty. Run 1: both created; run 2: both skipped. maximumRangeKm=350 (matches the simulator's range = battery% x 3.5; the app has no default), connectorType=CCS2; batteryCapacityKwh left empty because no source states one (optional in the app). No charging sessions seeded: no screen creates or debits sessions. No telemetry. 11.1: VERIFIED by students (EV001 and EV002 visible in ev_companion.vehicles).
 12. Flutter migration	☑	Added lib/services/api (api_config: API_BASE_URL dart-define + release HTTPS warning; api_client: Firebase ID token header, 20 s timeout, one retry for GET/PUT/DELETE only (POST/PATCH never auto-repeated to avoid duplicate writes), one token refresh on 401, friendly ApiException messages, no token/body logging). firestore_service.dart -> data_service.dart (git mv), FirestoreService -> DataService everywhere; same method names, now calling the Phase 10 endpoints. watch* streams: immediate fetch, 15 s polling while listened, refetch after any app write (shared static change stream), duplicate results skipped, errors emitted and retried, timers cancelled on cancel. Removed legacy card migration (methods + _LegacyCardMigration widget) and Firestore telemetry readers. Models parse ISO dates to local time; ChargingCard no longer has a cardNumber field. Profile photo via PUT/GET /v1/me/photo (Image.memory, 300 KB client check). Learning assistant -> POST /v1/assistant/ask (ApiLearningAssistantService). main.dart: Functions emulator block removed. Removed cloud_firestore, cloud_functions, firebase_storage, fake_cloud_firestore (searching lib/ and test/ finds none). Pull-to-refresh on Maintenance and Charging card screens (RefreshIndicator, as on Profile). Firebase-specific error handling switched to ApiException; user-facing 'from Firebase' text corrected. Tests: Firestore fakes replaced by MockClient (test/support/fake_api.dart); new api_client_test (header, 401 refresh, timeout, error mapping, offline, watch stream emit/refetch/no-duplicate/cancel) and vehicle_controls_page_test (shared snapshot values, placeholders when cleared, no BLE start; Controls got an injectable currentUid). Still no widget tests for Dashboard, Charging and Trip: they read FirebaseAuth.instance and call live weather/location/OSM services directly; covered by the shared-state test and the Phase 13 device checks. Sign-up rollback and the Phase 2 sign-out escape unchanged. docs/paypal-checkout.md and docs/vehicle-ble-demo.md updated. analyzer clean, 120 tests pass, web release build OK.
+12b. Login on MongoDB + JWT	☑	DECISION 2026-10-21 (team): authentication moves to our backend (MongoDB users with bcrypt hashes, JWT access 15 min + rotating hashed refresh 7 days); Firebase removed completely (Auth, Firestore, Functions, Storage, firebase-admin, Google sign-in). Overrides the old rule "Login stays on Firebase Authentication". Phases 6.A and 7.4 removed – no longer needed. Done: backend `/v1/auth` signup (vehicle verify + claim + user in one transaction; returns no tokens, the app goes back to Login), login (generic `invalid_credentials`, dummy-hash compare for unknown emails, 30/15 min per IP and 10/15 min per email), refresh (opaque `<id>.<secret>` token, only SHA-256 of the secret stored, rotation; reusing a rotated token revokes ALL of the user's refresh tokens), logout, change-password (revokes all, returns new tokens); bcryptjs (12 rounds) + jose HS256 with issuer/audience/`typ: access`; password 8–64 chars with upper/lower/digit (same as the app); `passwordHash` `select: false`; `refreshTokens` collection with TTL index; `POST /v1/me/profile` removed; `PATCH /v1/me` rejects email; firebase-admin and FIREBASE_PROJECT_ID removed, JWT_SECRET (≥ 32 chars) added. Flutter: AuthService talks to `/v1/auth`, tokens in memory only, ApiClient refreshes once on 401 and a failed refresh signs out; signOut disconnects BLE first; Google sign-in and Forgot password removed (forgot_password_page.dart deleted); firebase_core/firebase_auth/google_sign_in removed; BLE client's auth check now uses AuthService (protocol untouched). Deleted functions/, firestore.rules, tools/firestore_seed/, firebase.json, .firebaserc, root .env.example (old Functions Gemini key), lib/firebase_options.dart, android/app/google-services.json, Gradle google-services plugin. README, backend/README and docs/vehicle-ble-demo.md corrected (full README rewrite stays in Phase 14). `git grep -i firebase` finds only this plan. `npm run reset-demo-data` run on Atlas: 0 old users/data left, both vehicles kept and released, indexes rebuilt; `npm run seed`: EV001/EV002 up to date. Backend: lint, typecheck, 113 tests, build pass. Flutter: analyzer clean, 132 tests pass. 7.4 JWT_SECRET: pending (students). Phase 13 device checks must be redone on the new login.
 13. Full local test	☐	In progress (students, student numbering). VERIFIED: 19 Learn/Trip/Charging show live BLE battery 95% / 333 km. FAILED, being fixed: 11 PayPal 'seller doesn't accept payments in your currency' (sandbox accounts were country IN; order is USD by design; students creating US sandbox business+personal accounts and a new app; only backend/.env PAYPAL_CLIENT_ID/SECRET change, then restart backend); 12 Learn chatbot unavailable: Gemini returned 403 'Consumer api_key has been suspended' (key in .env is the one pasted into chat earlier; students creating a new key; model gemini-flash-latest to be confirmed once a working key is in place); 14 Trip planner 'OpenStreetMap full-route station search failed (502)': confirmed overpass-api.de was returning 502 (overloaded), maps.mail.ru answered with CORS; 13 Charging map stuck on 'Searching'. Fixes: Overpass fallback servers (overpass-api.de, maps.mail.ru, overpass.private.coffee, overpass.kumi.systems) on 429/5xx/timeout/runtime-error remark, per-server and overall time limits (60 s nearby/corridor, 120 s full route), friendly MapServiceBusyException message with the existing Try again button / Plan Trip retry; 'Go to dashboard' label when connected. 4 new tests; 124 pass, analyzer clean. Security item (EV002 user requests EV001): verified by backend automated 404 sweep, not on the live app.
 14. Old Firebase backend removed	☐	
 15. Render deploy	☐	
@@ -643,6 +661,7 @@ Phase	Status	Notes
 17. Security review	☐	
 18. Final verification + report	☐	
 Known limitations:
+No password reset by email (Forgot password removed with Firebase in Phase 12b). A forgotten password needs a new account or a developer reset.
 The BLE simulator accepts commands from any connected device (demo only).
 PayPal runs in Sandbox (test) mode.
 Render's free plan sleeps after 15 minutes idle.

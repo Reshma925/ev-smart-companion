@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -69,7 +68,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   Future<void> _save() async {
     if (_saving || !_formKey.currentState!.validate()) return;
-    final user = FirebaseAuth.instance.currentUser;
+    final user = AuthService().currentUser;
     if (user == null || user.uid != widget.profile.uid) {
       _showMessage('Your session changed. Sign in again before editing.');
       return;
@@ -138,7 +137,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Update the profile information stored in your Firestore account. Your sign-in email remains managed by Firebase Authentication.',
+                          'Update the profile information stored in your account. Your sign-in email cannot be changed here.',
                           style: TextStyle(
                             color: AppTheme.mutedBlue,
                             height: 1.45,

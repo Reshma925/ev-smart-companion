@@ -13,6 +13,8 @@ export type AppOptions = {
   nodeEnv: 'development' | 'test' | 'production';
   corsOrigins: string[];
   verifyIdToken: TokenVerifier;
+  /** Public sign-up/login endpoints, mounted at /v1/auth before requireAuth. */
+  authRouter?: Router;
   /** Feature routers mounted under /v1 behind requireAuth. */
   routers?: Router[];
   globalRateLimit?: number;
@@ -52,6 +54,8 @@ export function createApp(options: AppOptions) {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+
+  if (options.authRouter) app.use('/v1/auth', options.authRouter);
 
   const v1 = Router();
   v1.use(requireAuth(options.verifyIdToken));

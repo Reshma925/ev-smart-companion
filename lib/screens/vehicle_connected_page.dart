@@ -65,7 +65,7 @@ class VehicleConnectedPage extends StatelessWidget {
               ),
               const _StatusRow(
                 icon: Icons.lock_outline,
-                label: 'Vehicle identity loaded from Firestore',
+                label: 'Vehicle identity loaded from your account',
               ),
               const SizedBox(height: 28),
               PrimaryButton(

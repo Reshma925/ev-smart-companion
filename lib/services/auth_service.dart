@@ -1,158 +1,199 @@
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter/foundation.dart'
-    show debugPrint, debugPrintStack, kIsWeb;
+import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:http/http.dart' as http;
+
+import 'api/api_client.dart';
 import 'vehicle_ble_client.dart';
 
+/// The signed-in account.
+class AuthUser {
+  const AuthUser({required this.uid, required this.email, this.name = ''});
+
+  final String uid;
+  final String email;
+  final String name;
+}
+
+Future<String?> _noToken({bool forceRefresh = false}) async => null;
+
+/// Email/password login against the EV Smart Companion backend.
+///
+/// Tokens are kept in memory only, so every app launch or page reload starts
+/// at Login. The access token is short-lived and refreshed automatically; if
+/// the session can no longer be refreshed the user is signed out, which sends
+/// [authStateChanges] to null and AuthGate back to Login.
 class AuthService {
-  static Future<void>? _googleInitialization;
+  /// The app-wide session.
+  factory AuthService() => instance;
 
-  AuthService({FirebaseAuth? firebaseAuth})
-    : _auth = firebaseAuth ?? FirebaseAuth.instance;
+  /// A separate session, e.g. for tests with a fake [httpClient].
+  AuthService.withClient({http.Client? httpClient, String? baseUrl})
+    : _httpClient = httpClient,
+      _baseUrl = baseUrl,
+      _publicApi = ApiClient(
+        httpClient: httpClient,
+        baseUrl: baseUrl,
+        tokenProvider: _noToken,
+      );
 
-  final FirebaseAuth _auth;
-  User? get currentUser => _auth.currentUser;
-  Stream<User?> get authStateChanges => _auth.authStateChanges();
+  static final AuthService instance = AuthService.withClient();
 
-  Future<UserCredential> signUpWithEmail({
-    required String email,
-    required String password,
+  final http.Client? _httpClient;
+  final String? _baseUrl;
+  final ApiClient _publicApi;
+  late final ApiClient _authedApi = ApiClient(
+    httpClient: _httpClient,
+    baseUrl: _baseUrl,
+    tokenProvider: accessToken,
+  );
+  final _changes = StreamController<AuthUser?>.broadcast();
+
+  AuthUser? _user;
+  String? _accessToken;
+  DateTime? _accessTokenExpiry;
+  String? _refreshToken;
+  Future<String?>? _refreshing;
+
+  AuthUser? get currentUser => _user;
+
+  /// Emits the current user immediately, then every sign-in and sign-out.
+  Stream<AuthUser?> authStateChanges() async* {
+    yield _user;
+    yield* _changes.stream;
+  }
+
+  /// Creates the account and links the vehicle in one step. Does not sign in:
+  /// the user logs in afterwards with the same email and password.
+  Future<void> signUp({
     required String name,
-  }) async {
-    try {
-      final credential = await _auth.createUserWithEmailAndPassword(
-        email: email.trim(),
-        password: password,
-      );
-      await credential.user?.updateDisplayName(name.trim());
-      return credential;
-    } on FirebaseAuthException catch (error, stackTrace) {
-      debugPrint('Firebase Auth error code: ${error.code}');
-      debugPrint('Firebase Auth error message: ${error.message}');
-      debugPrintStack(stackTrace: stackTrace);
-      rethrow;
-    }
-  }
-
-  Future<UserCredential> signInWithEmail({
     required String email,
     required String password,
-  }) {
-    return _auth.signInWithEmailAndPassword(
-      email: email.trim(),
-      password: password,
+    required String phone,
+    required String city,
+    required String registrationNumber,
+    required String model,
+    required String ownerName,
+    required String vin,
+  }) async {
+    await _publicApi.post('/v1/auth/signup', {
+      'name': name.trim(),
+      'email': email.trim(),
+      'password': password,
+      'phone': phone.trim(),
+      'city': city.trim(),
+      'registrationNumber': registrationNumber,
+      'model': model,
+      'ownerName': ownerName,
+      'vin': vin,
+    });
+  }
+
+  Future<AuthUser> signInWithEmail({
+    required String email,
+    required String password,
+  }) async {
+    final response =
+        await _publicApi.post('/v1/auth/login', {
+              'email': email.trim(),
+              'password': password,
+            })
+            as Map;
+    final user = Map<String, dynamic>.from(response['user'] as Map);
+    _storeTokens(response);
+    final signedIn = AuthUser(
+      uid: user['uid'] as String,
+      email: user['email'] as String? ?? email.trim().toLowerCase(),
+      name: user['name'] as String? ?? '',
     );
+    _setUser(signedIn);
+    return signedIn;
   }
 
-  Future<UserCredential?> signInWithGoogle() async {
-    if (kIsWeb) {
-      return _auth.signInWithPopup(GoogleAuthProvider());
-    }
-
-    final googleSignIn = GoogleSignIn.instance;
-    await (_googleInitialization ??= googleSignIn.initialize());
-    if (!googleSignIn.supportsAuthenticate()) {
-      throw UnsupportedError(
-        'Google Sign-In is not supported on this platform configuration.',
-      );
-    }
-
-    GoogleSignInAccount account;
-    try {
-      account = await googleSignIn.authenticate();
-    } on GoogleSignInException catch (error) {
-      if (error.code == GoogleSignInExceptionCode.canceled) return null;
-      rethrow;
-    }
-    final idToken = account.authentication.idToken;
-    if (idToken == null) {
-      throw FirebaseAuthException(
-        code: 'missing-google-id-token',
-        message: 'Google did not return an identity token. Please try again.',
-      );
-    }
-    final credential = GoogleAuthProvider.credential(idToken: idToken);
-    return _auth.signInWithCredential(credential);
-  }
-
+  /// Disconnects the vehicle, ends the session locally, then tells the server.
   Future<void> signOut() async {
     await VehicleBleClient.shared.disconnect();
-    await _auth.signOut();
-    if (kIsWeb) return;
-    final googleSignIn = GoogleSignIn.instance;
+    final refreshToken = _refreshToken;
+    _clearSession();
+    if (refreshToken == null) return;
     try {
-      await (_googleInitialization ??= googleSignIn.initialize());
-      await googleSignIn.signOut();
-    } catch (_) {
-      // Firebase sign-out is authoritative; clearing the provider session is best effort.
+      await _publicApi.post('/v1/auth/logout', {'refreshToken': refreshToken});
+    } catch (error) {
+      // The local session is already gone; server-side revocation is best effort.
+      debugPrint('[Auth] Logout request failed: ${error.runtimeType}');
     }
-  }
-
-  Future<void> sendPasswordResetEmail(String email) {
-    return _auth.sendPasswordResetEmail(email: email.trim());
   }
 
   Future<void> changePassword({
     required String currentPassword,
     required String newPassword,
   }) async {
-    final user = _auth.currentUser;
-    final email = user?.email;
-    if (user == null || email == null || email.isEmpty) {
-      throw StateError('Sign in with an email and password to change it.');
+    if (_user == null) {
+      throw StateError('Sign in to change your password.');
     }
-    if (!user.providerData.any(
-      (provider) => provider.providerId == 'password',
-    )) {
-      throw StateError(
-        'This account does not use an email password. Use password reset if the account supports it.',
-      );
-    }
+    final response = await _authedApi.post('/v1/auth/change-password', {
+      'currentPassword': currentPassword,
+      'newPassword': newPassword,
+    });
+    _storeTokens(response as Map);
+  }
 
-    final credential = EmailAuthProvider.credential(
-      email: email,
-      password: currentPassword,
-    );
-    await user.reauthenticateWithCredential(credential);
-    await user.updatePassword(newPassword);
+  /// A valid access token, refreshed when expired or when [forceRefresh] is
+  /// set. Returns null when signed out.
+  Future<String?> accessToken({bool forceRefresh = false}) async {
+    if (_refreshToken == null) return null;
+    final expiry = _accessTokenExpiry;
+    final stillValid =
+        _accessToken != null &&
+        expiry != null &&
+        DateTime.now().isBefore(expiry.subtract(const Duration(seconds: 30)));
+    if (!forceRefresh && stillValid) return _accessToken;
+    return _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
+  }
+
+  Future<String?> _refresh() async {
+    final refreshToken = _refreshToken;
+    if (refreshToken == null) return null;
+    try {
+      final response = await _publicApi.post('/v1/auth/refresh', {
+        'refreshToken': refreshToken,
+      });
+      _storeTokens(response as Map);
+      return _accessToken;
+    } on ApiException catch (error) {
+      if (error.statusCode == 401) {
+        // The session ended (expired, revoked or reused): back to Login.
+        await VehicleBleClient.shared.disconnect();
+        _clearSession();
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  void _storeTokens(Map response) {
+    _accessToken = response['accessToken'] as String;
+    _refreshToken = response['refreshToken'] as String;
+    final seconds = (response['accessTokenExpiresIn'] as num?)?.toInt() ?? 900;
+    _accessTokenExpiry = DateTime.now().add(Duration(seconds: seconds));
+  }
+
+  void _setUser(AuthUser? user) {
+    _user = user;
+    _changes.add(user);
+  }
+
+  void _clearSession() {
+    _accessToken = null;
+    _accessTokenExpiry = null;
+    _refreshToken = null;
+    if (_user != null) _setUser(null);
   }
 
   String messageFor(Object error) {
-    if (error is FirebaseAuthException) {
-      return switch (error.code) {
-        'invalid-email' => 'Enter a valid email address.',
-        'user-disabled' => 'This account has been disabled.',
-        'user-not-found' ||
-        'wrong-password' ||
-        'invalid-credential' => 'The email or password is incorrect.',
-        'email-already-in-use' =>
-          'An account already exists for this email. Please log in.',
-        'weak-password' => 'Choose a stronger password.',
-        'operation-not-allowed' =>
-          'This sign-in method is not enabled in Firebase yet.',
-        'network-request-failed' =>
-          'Network error. Check your connection and try again.',
-        'account-exists-with-different-credential' =>
-          'An account already exists with this email using another sign-in method.',
-        'missing-google-id-token' =>
-          error.message ?? 'Google sign-in could not be completed.',
-        'configuration-not-found' =>
-          'Firebase Authentication is not initialized for this Firebase project. Enable it in Firebase Console → Authentication → Get started, then enable Email/Password.',
-        _ => '${error.code}: ${error.message ?? 'Authentication failed.'}',
-      };
-    }
-    if (error is GoogleSignInException) {
-      if (error.code == GoogleSignInExceptionCode.canceled) {
-        return 'Google sign-in was canceled.';
-      }
-      return error.description ?? 'Google sign-in failed. Please try again.';
-    }
-    if (error is UnsupportedError) return error.message.toString();
+    if (error is ApiException) return error.message;
     if (error is StateError) return error.message;
-    if (error is FirebaseException) {
-      return '${error.code}: ${error.message ?? error.toString()}';
-    }
+    if (error is ArgumentError) return error.message.toString();
     return 'Something went wrong. Please try again.';
   }
 }

@@ -2,7 +2,7 @@ import { model, Schema, Types, type InferSchemaType } from 'mongoose';
 
 import { nonNegativeInteger } from './common.js';
 
-// Mirrors chargingSessions in functions/card_backend.js: a trusted session is
+// Mirrors the original backend's charging sessions: a trusted session is
 // status "confirmed" with debitStatus "pending", and becomes "completed" once
 // debitConfirmedChargingSession has charged the card.
 const chargingSessionSchema = new Schema(

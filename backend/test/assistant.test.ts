@@ -1,4 +1,4 @@
-// Ported from functions/test/learning_assistant.test.js.
+// Ported from the original learning-assistant tests.
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 

@@ -2,7 +2,7 @@ import { model, Schema, Types, type InferSchemaType } from 'mongoose';
 
 import { nonNegativeInteger } from './common.js';
 
-// Field values follow functions/card_backend.js: type "credit" (PayPal recharge)
+// Field values follow the original backend: type "credit" (PayPal recharge)
 // or "debit" (confirmed charging session), status "completed".
 const cardTransactionSchema = new Schema(
   {

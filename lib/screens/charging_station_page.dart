@@ -1,14 +1,13 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:firebase_auth/firebase_auth.dart';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/auth_service.dart';
 import '../app_theme.dart';
 import '../models/charging_station.dart';
 import '../models/road_route.dart';
@@ -140,7 +139,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     });
 
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final uid = AuthService().currentUser?.uid;
       if (uid == null) {
         throw StateError('Sign in to load your registered vehicle.');
       }
@@ -148,7 +147,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       final profile = await _dataService.getUserProfile(uid);
       final vehicleId = profile?.vehicleId;
       if (profile == null || vehicleId == null || vehicleId.isEmpty) {
-        throw StateError('Your Firestore profile has no linked vehicle.');
+        throw StateError('Your profile has no linked vehicle.');
       }
 
       final vehicle = await _dataService.getVehicleById(vehicleId);
@@ -178,7 +177,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
               if (!mounted) return;
               setState(() {
                 _vehicleMessage =
-                    'Could not refresh vehicles/${_vehicle?.id ?? 'linked vehicle'} from Firebase. Check your connection and retry.';
+                    'Could not refresh vehicles/${_vehicle?.id ?? 'linked vehicle'}. Check your connection and retry.';
               });
             },
           );
@@ -197,21 +196,18 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
               debugPrint('Distance preference stream failed: $error');
               if (!mounted) return;
               setState(() {
-                _vehicleMessage =
-                    'Could not refresh your distance preference from Firebase.';
+                _vehicleMessage = 'Could not refresh your distance preference.';
               });
             },
           );
     } catch (error, stackTrace) {
-      debugPrint(
-        'Could not load the registered Firebase vehicle: $error\n$stackTrace',
-      );
+      debugPrint('Could not load the registered vehicle: $error\n$stackTrace');
       if (!mounted) return;
       setState(() {
         _loadingVehicle = false;
         _vehicleMessage = error is StateError
             ? error.message.toString()
-            : 'Could not load vehicle data from Firebase. Check your connection and retry.';
+            : 'Could not load vehicle data. Check your connection and retry.';
       });
     }
   }
@@ -361,7 +357,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
   }
 
   Future<void> _openChargingCard() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = AuthService().currentUser?.uid;
     if (uid == null) {
       _showMessage('Sign in to view your charging card.');
       return;
@@ -390,15 +386,15 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
     }
   }
 
-  Future<void> _reloadVehicleDataFromFirestore() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+  Future<void> _reloadVehicleData() async {
+    final uid = AuthService().currentUser?.uid;
     if (uid == null) {
       throw StateError('Sign in to load vehicle information.');
     }
     final profile = await _dataService.getUserProfile(uid);
     final vehicleId = profile?.vehicleId;
     if (profile == null || vehicleId == null || vehicleId.isEmpty) {
-      throw StateError('No vehicle is linked to this Firebase profile.');
+      throw StateError('No vehicle is linked to this profile.');
     }
     final vehicle = await _dataService.getVehicleById(vehicleId);
     if (vehicle == null) {
@@ -432,7 +428,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         });
         return;
       }
-      await _reloadVehicleDataFromFirestore();
+      await _reloadVehicleData();
       if (!mounted) return;
       final location = _userLocation!;
       final rangeKm = _searchRadiusKm;
@@ -440,7 +436,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         setState(() {
           _loadingStations = false;
           _stationMessage =
-              _vehicleMessage ?? 'Firebase vehicle range data is unavailable.';
+              _vehicleMessage ?? 'Vehicle range data is unavailable.';
         });
         return;
       }
@@ -512,7 +508,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       return;
     }
     try {
-      await _reloadVehicleDataFromFirestore();
+      await _reloadVehicleData();
     } catch (error, stackTrace) {
       debugPrint(
         'Could not refresh vehicle data for route search: $error\n$stackTrace',

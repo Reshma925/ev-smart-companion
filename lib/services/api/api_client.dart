@@ -2,16 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
+import '../auth_service.dart';
 import 'api_config.dart';
 
-/// Returns the signed-in user's Firebase ID token, or null when signed out.
+/// Returns the signed-in user's access token, or null when signed out.
 typedef IdTokenProvider = Future<String?> Function({bool forceRefresh});
 
-Future<String?> _firebaseIdToken({bool forceRefresh = false}) async =>
-    FirebaseAuth.instance.currentUser?.getIdToken(forceRefresh);
+Future<String?> _sessionAccessToken({bool forceRefresh = false}) =>
+    AuthService().accessToken(forceRefresh: forceRefresh);
 
 class ApiException implements Exception {
   const ApiException(this.statusCode, this.code, this.message);
@@ -27,7 +27,7 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
-/// Talks to the backend with the Firebase ID token attached. Never logs tokens
+/// Talks to the backend with the access token attached. Never logs tokens
 /// or request/response bodies.
 class ApiClient {
   ApiClient({
@@ -36,7 +36,7 @@ class ApiClient {
     String? baseUrl,
     this.timeout = const Duration(seconds: 20),
   }) : _http = httpClient ?? http.Client(),
-       _tokenProvider = tokenProvider ?? _firebaseIdToken,
+       _tokenProvider = tokenProvider ?? _sessionAccessToken,
        _baseUrl = (baseUrl ?? apiBaseUrl).replaceFirst(RegExp(r'/+$'), '');
 
   final http.Client _http;
@@ -96,10 +96,21 @@ class ApiClient {
     http.Response? response;
     for (var attempt = 1; ; attempt++) {
       try {
-        response = await _attempt(method, uri, encodedBody, refresh: false);
-        if (response.statusCode == 401) {
+        final (first, sentToken) = await _attempt(
+          method,
+          uri,
+          encodedBody,
+          refresh: false,
+        );
+        response = first;
+        if (response.statusCode == 401 && sentToken) {
           // The token may have just expired: refresh it once and retry.
-          response = await _attempt(method, uri, encodedBody, refresh: true);
+          (response, _) = await _attempt(
+            method,
+            uri,
+            encodedBody,
+            refresh: true,
+          );
         }
         break;
       } on TimeoutException {
@@ -126,7 +137,8 @@ class ApiClient {
     throw _errorFrom(response);
   }
 
-  Future<http.Response> _attempt(
+  /// Sends one request; also reports whether a token was attached.
+  Future<(http.Response, bool)> _attempt(
     String method,
     Uri uri,
     String? body, {
@@ -143,7 +155,8 @@ class ApiClient {
       request.body = body;
     }
     final streamed = await _http.send(request).timeout(timeout);
-    return http.Response.fromStream(streamed).timeout(timeout);
+    final response = await http.Response.fromStream(streamed).timeout(timeout);
+    return (response, token != null && token.isNotEmpty);
   }
 
   ApiException _errorFrom(http.Response response) {
@@ -162,7 +175,8 @@ class ApiClient {
     final status = response.statusCode;
     if (code == 'vehicle_not_found') {
       message = "You don't have access to this vehicle.";
-    } else if (status == 401) {
+    } else if (status == 401 &&
+        (code == 'unauthenticated' || message == null)) {
       message = 'Your sign-in has expired. Please sign in again.';
     } else if (status == 429) {
       message ??= 'Too many requests. Please wait a moment and try again.';

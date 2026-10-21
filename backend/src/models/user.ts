@@ -1,10 +1,14 @@
+import { randomUUID } from 'node:crypto';
+
 import { model, Schema, type InferSchemaType } from 'mongoose';
 
 const userSchema = new Schema(
   {
-    _id: { type: String, required: true }, // Firebase UID
+    _id: { type: String, default: () => randomUUID() },
     name: { type: String, required: true, trim: true, maxlength: 128 },
     email: { type: String, required: true, trim: true, lowercase: true, maxlength: 254 },
+    // bcrypt hash only. Never selected by default and never returned by the API.
+    passwordHash: { type: String, required: true, select: false },
     phone: { type: String, trim: true, maxlength: 32, default: '' },
     city: { type: String, trim: true, maxlength: 80, default: '' },
     dateOfBirth: { type: Date, default: null },
@@ -19,10 +23,19 @@ const userSchema = new Schema(
     vehicleId: { type: String, trim: true, maxlength: 64, default: null },
     vehicleRegistrationNumber: { type: String, trim: true, maxlength: 32, default: '' },
   },
-  { timestamps: true, versionKey: false },
+  {
+    timestamps: true,
+    versionKey: false,
+    toJSON: {
+      transform: (_doc, ret: Record<string, unknown>) => {
+        delete ret.passwordHash;
+        return ret;
+      },
+    },
+  },
 );
 
-userSchema.index({ email: 1 });
+userSchema.index({ email: 1 }, { unique: true });
 
 export type UserDocument = InferSchemaType<typeof userSchema>;
 export const User = model('User', userSchema, 'users');

@@ -1,13 +1,9 @@
-// Ported from functions/card_backend.js (findVerifiedVehicle, vehicleMatches,
-// verifyAndCreateUserProfile, linkVerifiedVehicle, setConnectedVehicle) with
-// the vehicleClaims collection replaced by the atomic vehicles.ownerUid claim.
-import mongoose from 'mongoose';
-
+// Vehicle verification, linking and switching, ported from the original
+// backend. A vehicle is claimed atomically through vehicles.ownerUid.
 import { ChargingCard } from '../models/chargingCard.js';
 import { normalizeRegistration, normalizeVin } from '../models/common.js';
 import { User } from '../models/user.js';
 import { Vehicle } from '../models/vehicle.js';
-import type { AuthUser } from '../types.js';
 import { badRequest, conflict, notFound, vehicleNotFound } from './errors.js';
 import type { VehicleRecord } from './serialize.js';
 
@@ -63,51 +59,6 @@ export async function requireOwnedVehicle(
   return vehicle;
 }
 
-export type ProfileInput = VehicleDetails & { name: string; phone?: string; email?: string };
-
-export async function createProfileWithVehicle(
-  authUser: AuthUser,
-  input: ProfileInput,
-): Promise<VehicleRecord> {
-  const email = authUser.email;
-  if (!email) {
-    throw badRequest('The authenticated account must include an email address.');
-  }
-  if (input.email && input.email.trim().toLowerCase() !== email.trim().toLowerCase()) {
-    throw badRequest('The profile email must match the authenticated account.');
-  }
-  const verified = await findVerifiedVehicle(input);
-
-  await mongoose.connection.transaction(async (session) => {
-    if (await User.exists({ _id: authUser.uid }).session(session)) {
-      throw conflict('A profile already exists for this account.', 'profile_exists');
-    }
-    const claimed = await Vehicle.findOneAndUpdate(
-      { _id: verified._id, ownerUid: null, isActive: true },
-      { ownerUid: authUser.uid },
-      { session, new: true },
-    ).lean<VehicleRecord>();
-    if (!claimed) {
-      throw conflict('This vehicle is already linked to an account.', 'vehicle_already_claimed');
-    }
-    if (!vehicleMatches(input, claimed)) throw notVerified();
-    await User.create(
-      [
-        {
-          _id: authUser.uid,
-          name: input.name,
-          email,
-          phone: input.phone ?? '',
-          vehicleId: claimed._id,
-          vehicleRegistrationNumber: claimed.registrationNumber,
-        },
-      ],
-      { session },
-    );
-  });
-  return { ...verified, ownerUid: authUser.uid };
-}
-
 export async function linkVehicle(uid: string, details: VehicleDetails): Promise<VehicleRecord> {
   const verified = await findVerifiedVehicle(details);
   if (!(await User.exists({ _id: uid }))) {
@@ -149,7 +100,7 @@ export async function getConnectedVehicle(uid: string): Promise<VehicleRecord | 
   return vehicle && vehicle.ownerUid === uid && vehicle.isActive === true ? vehicle : null;
 }
 
-/** Ported from FirestoreService.verifyConnectedVehicleDetails: matches against the connected vehicle. */
+/** Matches the typed details against the user's connected vehicle. */
 export async function verifyConnectedVehicleDetails(
   uid: string,
   details: VehicleDetails,

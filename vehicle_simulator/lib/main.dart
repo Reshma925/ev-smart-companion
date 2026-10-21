@@ -541,7 +541,7 @@ class _VehicleSimulatorPageState extends State<VehicleSimulatorPage> {
               ),
               const SizedBox(height: 20),
               const Text(
-                'Demo data is sent only over Bluetooth and is not written to Firebase.',
+                'Demo data is sent only over Bluetooth and is not written to any server.',
                 style: TextStyle(color: Colors.black54),
                 textAlign: TextAlign.center,
               ),

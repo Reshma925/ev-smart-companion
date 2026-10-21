@@ -1,10 +1,10 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
+import '../services/auth_service.dart';
 import '../app_theme.dart';
 import '../models/charging_station.dart';
 import '../models/road_route.dart';
@@ -233,7 +233,7 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = AuthService().currentUser?.uid;
     if (uid == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('Trip Planner')),

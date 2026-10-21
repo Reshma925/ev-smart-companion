@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -36,16 +35,17 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
   @override
   void initState() {
     super.initState();
-    _loadDistanceUnit();
+    // During sign-up nobody is logged in yet, so there is no profile to read.
+    if (widget.pendingSignup == null) _loadDistanceUnit();
   }
 
   Future<void> _loadDistanceUnit() async {
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final uid = authService.currentUser?.uid;
       if (uid == null) throw StateError('Sign in to load vehicle preferences.');
       final profile = await dataService.getUserProfile(uid);
       if (profile == null) {
-        throw StateError('Your Firebase user profile is unavailable.');
+        throw StateError('Your user profile is unavailable.');
       }
       if (!mounted) return;
       setState(() {
@@ -55,8 +55,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _distanceUnitError =
-            'Could not load your Firebase distance preference: $error';
+        _distanceUnitError = 'Could not load your distance preference: $error';
       });
     }
   }
@@ -75,65 +74,35 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
     if (!formKey.currentState!.validate()) return;
 
     setState(() => isLoading = true);
-    User? newlyCreatedUser;
-    var profileProvisioningAttempted = false;
-
+    final signup = widget.pendingSignup;
     try {
-      final signup = widget.pendingSignup;
-      User? user = authService.currentUser;
-      if (signup != null &&
-          user?.email?.toLowerCase() != signup.email.toLowerCase()) {
-        if (user != null) {
-          throw FirebaseAuthException(
-            code: 'signup-session-mismatch',
-            message: 'Please sign in again to continue onboarding.',
-          );
-        }
-
-        final password = signup.password;
-        if (password == null) {
-          throw StateError('A password is required to create this account.');
-        }
-
-        user = (await authService.signUpWithEmail(
-          email: signup.email,
-          password: password,
+      if (signup != null) {
+        // One request creates the account and links the vehicle; on any
+        // error nothing is saved.
+        await authService.signUp(
           name: signup.name,
-        )).user;
-        newlyCreatedUser = user;
-      }
-
-      if (user == null) {
-        throw FirebaseAuthException(
-          code: 'session-expired',
-          message: 'Your sign-in session ended. Please log in again.',
-        );
-      }
-
-      final existingProfile = await dataService.getUserProfile(user.uid);
-      if (existingProfile == null) {
-        final profileName = signup?.name.trim().isNotEmpty == true
-            ? signup!.name.trim()
-            : user.displayName?.trim();
-
-        if (profileName == null || profileName.isEmpty) {
-          throw StateError(
-            'A profile name is required to finish registration.',
-          );
-        }
-
-        profileProvisioningAttempted = true;
-        await dataService.verifyAndCreateUserProfile(
-          uid: user.uid,
-          name: profileName,
-          email: user.email ?? signup?.email ?? '',
-          phone: signup?.mobile ?? '',
+          email: signup.email,
+          password: signup.password,
+          phone: signup.mobile,
+          city: signup.city,
           registrationNumber: registration.text,
           model: model.text,
           ownerName: ownerName.text,
           vin: vin.text,
         );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Account created. Log in with your email and password.',
+            ),
+          ),
+        );
       } else {
+        final user = authService.currentUser;
+        if (user == null) {
+          throw StateError('Your sign-in session ended. Please log in again.');
+        }
         final vehicle = await dataService.verifyConnectedVehicleDetails(
           uid: user.uid,
           registrationNumber: registration.text,
@@ -149,31 +118,21 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
       }
 
       if (!mounted) return;
-
+      // After sign-up nobody is logged in, so AuthGate shows Login.
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => const AuthGate()),
         (route) => false,
       );
-    } catch (error, stackTrace) {
-      debugPrint('Vehicle registration failed: $error\n$stackTrace');
-
-      if (newlyCreatedUser != null && !profileProvisioningAttempted) {
-        try {
-          await newlyCreatedUser.delete();
-        } catch (rollbackError, rollbackStackTrace) {
-          debugPrint(
-            'Could not remove the unprovisioned Firebase account: '
-            '$rollbackError\n$rollbackStackTrace',
-          );
-        }
-      }
-
+    } catch (error) {
+      debugPrint('Vehicle registration failed: ${error.runtimeType}');
       if (mounted) {
         await showErrorDialog(
           context,
-          'Vehicle verification failed: ${authService.messageFor(error)}\n\nDetails: $error',
-          title: 'Unable to register vehicle',
+          authService.messageFor(error),
+          title: signup != null
+              ? 'Unable to create your account'
+              : 'Unable to verify vehicle',
         );
       }
     } finally {
@@ -314,7 +273,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                         height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Text('Save to Firebase'),
+                    : const Text('Save'),
               ),
             ],
           ),
@@ -322,19 +281,15 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
       );
 
       if (saved == true && mounted) {
-        final refreshed = await dataService.getVehicleRecordById(
-          vehicle.id,
-        );
+        final refreshed = await dataService.getVehicleRecordById(vehicle.id);
         if (!mounted) return;
         if (refreshed == null) {
           throw StateError(
-            'Configuration was saved, but the vehicle could not be reloaded from Firestore.',
+            'Configuration was saved, but the vehicle could not be reloaded.',
           );
         }
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Vehicle configuration refreshed from Firebase.'),
-          ),
+          const SnackBar(content: Text('Vehicle configuration saved.')),
         );
       }
     } catch (error) {
@@ -484,7 +439,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                       ),
                       const SizedBox(height: 6),
                       const Text(
-                        'Configure known values and save them to Firebase. Missing values are not estimated.',
+                        'Configure known values and save them. Missing values are not estimated.',
                       ),
                       const SizedBox(height: 8),
                       Align(
@@ -531,7 +486,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Text(
-                    'Could not load vehicle data from Firebase: ${snapshot.error}',
+                    'Could not load vehicle data: ${snapshot.error}',
                     textAlign: TextAlign.center,
                   ),
                 ),
@@ -549,7 +504,7 @@ class _VehicleDetailsPageState extends State<VehicleDetailsPage> {
             return Scaffold(
               appBar: AppBar(title: const Text('My vehicle')),
               body: const Center(
-                child: Text('This vehicle is no longer available in Firebase.'),
+                child: Text('This vehicle is no longer available.'),
               ),
             );
           }

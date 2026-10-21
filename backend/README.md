@@ -1,8 +1,10 @@
 # EV Smart Companion backend
 
 Node.js + TypeScript + Express API backed by MongoDB Atlas. The Flutter app
-signs in with Firebase Authentication and sends the Firebase ID token as
-`Authorization: Bearer <token>`; this server verifies it and serves profile,
+signs up and logs in here (`/v1/auth`: email + bcrypt-hashed password, a
+15-minute JWT access token and a rotating 7-day refresh token stored only as a
+hash) and sends the access token as `Authorization: Bearer <token>`; this
+server verifies it and serves profile,
 vehicle, maintenance, controls-preference, charging-card, PayPal and learning
 assistant data.
 
@@ -18,20 +20,22 @@ from the BLE simulator.
 
 ## Commands
 
-| Command             | What it does                                        |
-| ------------------- | --------------------------------------------------- |
-| `npm run dev`       | Start the API on http://localhost:8081 with reload  |
-| `npm run build`     | Compile TypeScript to `dist/`                       |
-| `npm start`         | Run the compiled server (used on Render)            |
-| `npm test`          | Run tests against an in-memory MongoDB replica set  |
-| `npm run lint`      | ESLint                                              |
-| `npm run typecheck` | TypeScript type check, including tests              |
-| `npm run format`    | Prettier                                            |
-| `npm run check-env` | Check that every environment variable is set        |
-| `npm run seed`      | Insert or update the demo vehicles (safe to re-run) |
+| Command                   | What it does                                                               |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `npm run dev`             | Start the API on http://localhost:8081 with reload                         |
+| `npm run build`           | Compile TypeScript to `dist/`                                              |
+| `npm start`               | Run the compiled server (used on Render)                                   |
+| `npm test`                | Run tests against an in-memory MongoDB replica set                         |
+| `npm run lint`            | ESLint                                                                     |
+| `npm run typecheck`       | TypeScript type check, including tests                                     |
+| `npm run format`          | Prettier                                                                   |
+| `npm run check-env`       | Check that every environment variable is set                               |
+| `npm run seed`            | Insert or update the demo vehicles (safe to re-run)                        |
+| `npm run reset-demo-data` | Delete all accounts and their data, release every vehicle (demo data only) |
 
 `GET /health` returns `{"status":"ok"}` without auth or database access. Every
-route under `/v1` requires a valid Firebase ID token.
+route under `/v1` except `/v1/auth/signup`, `/login`, `/refresh` and `/logout`
+requires a valid access token. Changing `JWT_SECRET` signs everyone out.
 
 ## Troubleshooting
 

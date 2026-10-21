@@ -1,9 +1,9 @@
 import 'dart:async';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
+import '../services/auth_service.dart';
 import '../app_theme.dart';
 import '../models/vehicle.dart';
 import '../models/vehicle_controls.dart';
@@ -23,7 +23,7 @@ class VehicleControlsPage extends StatefulWidget {
   final Vehicle vehicle;
   final DataService? dataService;
 
-  /// The signed-in user's ID. Defaults to Firebase Auth; injectable for tests.
+  /// The signed-in user's ID. Defaults to the app session; injectable for tests.
   final String? Function()? currentUid;
 
   @override
@@ -31,13 +31,12 @@ class VehicleControlsPage extends StatefulWidget {
 }
 
 class _VehicleControlsPageState extends State<VehicleControlsPage> {
-  late final DataService _data =
-      widget.dataService ?? DataService();
+  late final DataService _data = widget.dataService ?? DataService();
   final VehicleBleClient _ble = VehicleBleClient.shared;
   late VehicleAlertEngine _alertEngine;
 
   String? _currentUid() =>
-      widget.currentUid?.call() ?? FirebaseAuth.instance.currentUser?.uid;
+      widget.currentUid?.call() ?? AuthService().currentUser?.uid;
 
   VehicleControlsPreferences _preferences = const VehicleControlsPreferences();
   bool _preferencesLoading = true;

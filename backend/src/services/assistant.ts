@@ -1,4 +1,4 @@
-// Ported from functions/learning_assistant.js: same prompt, endpoint, limits
+// Ported from the original learning assistant: same prompt, endpoint, limits
 // and response parsing. The API key is never logged or returned.
 import { logger } from '../logger.js';
 import { HttpError } from '../middleware/errors.js';

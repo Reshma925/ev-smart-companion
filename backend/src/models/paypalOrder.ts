@@ -2,7 +2,7 @@ import { model, Schema, Types, type InferSchemaType } from 'mongoose';
 
 import { nonNegativeInteger } from './common.js';
 
-// Mirrors paypalRechargeOrders in functions/card_backend.js (PENDING → COMPLETED).
+// Mirrors the original backend's PayPal recharge orders (PENDING → COMPLETED).
 const paypalOrderSchema = new Schema(
   {
     _id: { type: String, required: true, maxlength: 128 }, // PayPal order ID

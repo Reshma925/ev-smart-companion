@@ -2,10 +2,10 @@ import { model, Schema, type InferSchemaType } from 'mongoose';
 
 export const MAX_PROFILE_PHOTO_BYTES = 300 * 1024;
 
-// Replaces Firebase Storage for profile photos.
+// Profile photos, stored in MongoDB.
 const profilePhotoSchema = new Schema(
   {
-    _id: { type: String, required: true }, // Firebase UID
+    _id: { type: String, required: true }, // user ID
     contentType: { type: String, required: true, enum: ['image/jpeg', 'image/png'] },
     data: {
       type: Buffer,

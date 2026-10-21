@@ -10,7 +10,7 @@ const envSchema = z.object({
     'must start with mongodb:// or mongodb+srv://',
   ),
   MONGODB_DB_NAME: required,
-  FIREBASE_PROJECT_ID: required,
+  JWT_SECRET: z.string().min(32, 'must be at least 32 characters'),
   CORS_ORIGINS: required,
   GEMINI_API_KEY: required,
   GEMINI_MODEL: required,
@@ -27,7 +27,7 @@ export type Env = {
   port: number;
   mongodbUri: string;
   mongodbDbName: string;
-  firebaseProjectId: string;
+  jwtSecret: string;
   corsOrigins: string[];
   geminiApiKey: string;
   geminiModel: string;
@@ -59,7 +59,7 @@ export function parseEnv(source: NodeJS.ProcessEnv): EnvResult {
       port: value.PORT,
       mongodbUri: value.MONGODB_URI,
       mongodbDbName: value.MONGODB_DB_NAME,
-      firebaseProjectId: value.FIREBASE_PROJECT_ID,
+      jwtSecret: value.JWT_SECRET,
       corsOrigins: value.CORS_ORIGINS.split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),
@@ -81,4 +81,19 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     process.exit(1);
   }
   return result.env;
+}
+
+/** For scripts (seed, reset) that only need the database settings. */
+export function loadDatabaseEnv(source: NodeJS.ProcessEnv = process.env): {
+  mongodbUri: string;
+  mongodbDbName: string;
+} {
+  const result = z
+    .object({ MONGODB_URI: envSchema.shape.MONGODB_URI, MONGODB_DB_NAME: required })
+    .safeParse(source);
+  if (!result.success) {
+    console.error('Set MONGODB_URI and MONGODB_DB_NAME in backend/.env.');
+    process.exit(1);
+  }
+  return { mongodbUri: result.data.MONGODB_URI, mongodbDbName: result.data.MONGODB_DB_NAME };
 }

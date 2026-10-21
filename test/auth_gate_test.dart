@@ -1,24 +1,21 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_application_2/screens/auth_gate.dart';
+import 'package:flutter_application_2/services/auth_service.dart';
 import 'package:flutter_application_2/screens/login_page.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _TestUser implements User {
-  @override
-  String get uid => 'authenticated-test-user';
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
+const _testUser = AuthUser(
+  uid: 'authenticated-test-user',
+  email: 'driver@example.com',
+);
 
 void main() {
   testWidgets('unauthenticated startup displays Login and no vehicle screen', (
     tester,
   ) async {
-    final authChanges = StreamController<User?>.broadcast();
+    final authChanges = StreamController<AuthUser?>.broadcast();
     addTearDown(authChanges.close);
 
     await tester.pumpWidget(
@@ -54,7 +51,7 @@ void main() {
   testWidgets('restored authenticated session loads its destination', (
     tester,
   ) async {
-    final authChanges = StreamController<User?>.broadcast();
+    final authChanges = StreamController<AuthUser?>.broadcast();
     addTearDown(authChanges.close);
 
     await tester.pumpWidget(
@@ -68,7 +65,7 @@ void main() {
     );
     expect(find.text('Welcome Back'), findsNothing);
 
-    authChanges.add(_TestUser());
+    authChanges.add(_testUser);
     await tester.pump();
     await tester.pumpAndSettle();
     expect(find.text('Vehicle connection'), findsOneWidget);
@@ -84,7 +81,7 @@ void main() {
   testWidgets('failed destination load can sign out and reach Login', (
     tester,
   ) async {
-    final authChanges = StreamController<User?>.broadcast();
+    final authChanges = StreamController<AuthUser?>.broadcast();
     addTearDown(authChanges.close);
     var signOutCalls = 0;
 
@@ -101,7 +98,7 @@ void main() {
         ),
       ),
     );
-    authChanges.add(_TestUser());
+    authChanges.add(_testUser);
     await tester.pump();
     await tester.pumpAndSettle();
     expect(
@@ -119,10 +116,10 @@ void main() {
     expect(find.textContaining('We could not load'), findsNothing);
   });
 
-  testWidgets('successful Login follows Firebase auth state into the app', (
+  testWidgets('successful Login follows the auth state into the app', (
     tester,
   ) async {
-    final authChanges = StreamController<User?>.broadcast();
+    final authChanges = StreamController<AuthUser?>.broadcast();
     addTearDown(authChanges.close);
 
     await tester.pumpWidget(
@@ -133,7 +130,7 @@ void main() {
             emailLoginAction: (email, password) async {
               expect(email, 'driver@example.com');
               expect(password, 'CorrectHorse1');
-              authChanges.add(_TestUser());
+              authChanges.add(_testUser);
             },
             errorMessageBuilder: (error) => error.toString(),
           ),
@@ -159,7 +156,7 @@ void main() {
   testWidgets('failed Login remains on Login and displays an error', (
     tester,
   ) async {
-    final authChanges = StreamController<User?>.broadcast();
+    final authChanges = StreamController<AuthUser?>.broadcast();
     addTearDown(authChanges.close);
 
     await tester.pumpWidget(

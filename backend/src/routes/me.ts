@@ -8,7 +8,6 @@ import { User } from '../models/user.js';
 import { badRequest, notFound } from '../services/errors.js';
 import { userJson, vehicleJson, type UserRecord } from '../services/serialize.js';
 import {
-  createProfileWithVehicle,
   getConnectedVehicle,
   linkVehicle,
   listOwnedVehicles,
@@ -16,14 +15,7 @@ import {
 } from '../services/vehicles.js';
 import { isoDate, requiredText, text, vehicleDetails, vehicleIdParams } from './schemas.js';
 
-const createProfileSchema = z.object({
-  name: requiredText(128),
-  phone: text(32).optional(),
-  email: z.string().trim().max(254).optional(),
-  ...vehicleDetails,
-});
-
-// Only the fields firestore.rules let a user change. Email comes from the token,
+// Only the fields a user may change. Email comes from the token,
 // the connected vehicle from PUT /v1/me/connected-vehicle, the photo from PUT /v1/me/photo.
 const updateProfileSchema = z.object({
   name: requiredText(128).optional(),
@@ -69,14 +61,6 @@ async function requireProfile(uid: string) {
 
 export function meRouter() {
   const router = Router();
-
-  // Sign-up: verify the vehicle, claim it and create the profile in one transaction.
-  router.post('/me/profile', validate({ body: createProfileSchema }), async (req, res) => {
-    const body = validBody(req, createProfileSchema);
-    const user = currentUser(req);
-    const vehicle = await createProfileWithVehicle(user, body);
-    res.status(201).json({ vehicle: vehicleJson(vehicle) });
-  });
 
   router.get('/me', async (req, res) => {
     res.json(userJson(await requireProfile(currentUser(req).uid)));

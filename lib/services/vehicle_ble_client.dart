@@ -2,11 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:vehicle_ble_protocol/vehicle_ble_protocol.dart';
 
 import 'vehicle_ble_web_adapter_interface.dart';
+import 'auth_service.dart';
 import 'vehicle_ble_web_adapter_stub.dart'
     if (dart.library.js_interop) 'vehicle_ble_web_adapter_web.dart'
     as web_adapter;
@@ -36,7 +36,7 @@ class VehicleBleClient extends ChangeNotifier {
 
   VehicleBleClient._applicationScoped()
     : webAdapter = null,
-      authenticationCheck = (() => FirebaseAuth.instance.currentUser != null);
+      authenticationCheck = (() => AuthService().currentUser != null);
 
   final VehicleBleWebAdapter? webAdapter;
   final bool Function()? authenticationCheck;

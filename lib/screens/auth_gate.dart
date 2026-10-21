@@ -1,13 +1,12 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
 import '../services/data_service.dart';
 import 'bluetooth_scanning_page.dart';
 import 'login_page.dart';
-import 'signup_page.dart';
 
-typedef AuthenticatedDestinationBuilder = Future<Widget> Function(User user);
+typedef AuthenticatedDestinationBuilder =
+    Future<Widget> Function(AuthUser user);
 typedef LoginPageBuilder = Widget Function(BuildContext context);
 typedef SignOutAction = Future<void> Function();
 
@@ -20,7 +19,7 @@ class AuthGate extends StatefulWidget {
     this.signOutAction,
   });
 
-  final Stream<User?>? authStateChanges;
+  final Stream<AuthUser?>? authStateChanges;
   final AuthenticatedDestinationBuilder? authenticatedDestinationBuilder;
   final LoginPageBuilder? loginPageBuilder;
 
@@ -37,7 +36,7 @@ class _AuthGateState extends State<AuthGate> {
   late Stream<_AuthStatus> _authStatusStream = _createAuthStatusStream();
 
   Stream<_AuthStatus> _createAuthStatusStream() =>
-      (widget.authStateChanges ?? FirebaseAuth.instance.authStateChanges()).map(
+      (widget.authStateChanges ?? AuthService().authStateChanges()).map(
         _AuthStatus.new,
       );
 
@@ -68,14 +67,13 @@ class _AuthGateState extends State<AuthGate> {
         if (user == null) {
           return widget.loginPageBuilder?.call(context) ?? const LoginPage();
         }
-        // AuthService is created lazily so tests without Firebase can run.
+        // AuthService is used lazily so tests can inject their own sign-out.
         final signOut = widget.signOutAction ?? () => AuthService().signOut();
         return _AuthenticatedDestination(
           key: ValueKey(user.uid),
           user: user,
           destinationBuilder:
-              widget.authenticatedDestinationBuilder ??
-              (user) => _loadDestination(user, signOut),
+              widget.authenticatedDestinationBuilder ?? _loadDestination,
           signOutAction: signOut,
         );
       },
@@ -86,22 +84,22 @@ class _AuthGateState extends State<AuthGate> {
 class _AuthStatus {
   const _AuthStatus(this.user);
 
-  final User? user;
+  final AuthUser? user;
 }
 
-Future<Widget> _loadDestination(User user, SignOutAction signOut) async {
-  final firestore = DataService();
-  final profile = await firestore.getUserProfile(user.uid);
+Future<Widget> _loadDestination(AuthUser user) async {
+  final data = DataService();
+  final profile = await data.getUserProfile(user.uid);
   if (profile == null) {
-    return SignUpPage(authenticatedOnboarding: true, signOutAction: signOut);
-  }
-  if (profile.vehicleId == null || profile.vehicleId!.isEmpty) {
     throw StateError(
-      'Your Firestore profile has no vehicle mapping. Contact support.',
+      'Your account could not be found. Sign out and sign up again.',
     );
   }
+  if (profile.vehicleId == null || profile.vehicleId!.isEmpty) {
+    throw StateError('Your account has no linked vehicle. Contact support.');
+  }
 
-  final vehicle = await firestore.getCurrentUserVehicle(user.uid);
+  final vehicle = await data.getCurrentUserVehicle(user.uid);
   if (vehicle == null) {
     throw StateError(
       'Your registered vehicle is unavailable or inactive. Contact support.',
@@ -118,7 +116,7 @@ class _AuthenticatedDestination extends StatefulWidget {
     required this.signOutAction,
   });
 
-  final User user;
+  final AuthUser user;
   final AuthenticatedDestinationBuilder destinationBuilder;
   final SignOutAction signOutAction;
 

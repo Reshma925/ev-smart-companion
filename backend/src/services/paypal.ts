@@ -1,4 +1,4 @@
-// Ported from functions/card_backend.js (createPayPalRechargeOrder,
+// Ported from the original backend (createPayPalRechargeOrder,
 // capturePayPalRechargeOrder, paypalRequest, throwPayPalApiError).
 import { createHash, randomUUID } from 'node:crypto';
 

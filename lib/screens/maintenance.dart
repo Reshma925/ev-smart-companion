@@ -341,7 +341,7 @@ class _MaintenancePageState extends State<MaintenancePage> {
             final error = recordSnapshot.error;
             final message = kDebugMode
                 ? 'Maintenance read failed: ${_maintenanceReadError(error)}'
-                : 'Maintenance records could not be loaded from Firebase.';
+                : 'Maintenance records could not be loaded.';
             return _LoadError(message: message, onRetry: () => setState(() {}));
           }
           if (recordSnapshot.connectionState == ConnectionState.waiting &&
@@ -804,7 +804,7 @@ class _ServiceHistory extends StatelessWidget {
               ? 'No service history yet'
               : 'No matching records',
           message: records.isEmpty
-              ? 'Add a service that has actually been completed. It will be saved to this vehicle in Firebase.'
+              ? 'Add a service that has actually been completed. It will be saved to this vehicle.'
               : 'No records are categorized as $category.',
           actionLabel: records.isEmpty ? 'Add service record' : null,
           onAction: records.isEmpty ? onAdd : null,
@@ -951,7 +951,7 @@ class _CoverageNotice extends StatelessWidget {
     child: _NoticeCard(
       icon: Icons.verified_user_outlined,
       text:
-          'Insurance and warranty dates are not available in this vehicle’s Firebase data yet. No expiry reminders are inferred.',
+          'Insurance and warranty dates are not available in this vehicle’s data yet. No expiry reminders are inferred.',
       source: 'NOT RECORDED',
     ),
   );

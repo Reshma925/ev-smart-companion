@@ -1,23 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import '../app_theme.dart';
 import '../models/user_model.dart';
-import '../services/auth_service.dart';
 import '../widgets/common_widgets.dart';
 import 'vehicle_details_page.dart';
 
 class SignUpPage extends StatefulWidget {
-  const SignUpPage({
-    super.key,
-    this.authenticatedOnboarding = false,
-    this.signOutAction,
-  });
-
-  final bool authenticatedOnboarding;
-
-  /// Used in authenticated onboarding so a half-registered account can leave
-  /// and reach Login. Defaults to [AuthService.signOut].
-  final Future<void> Function()? signOutAction;
+  const SignUpPage({super.key});
 
   @override
   State<SignUpPage> createState() => _SignUpPageState();
@@ -28,61 +16,25 @@ class _SignUpPageState extends State<SignUpPage> {
   final name = TextEditingController();
   final email = TextEditingController();
   final mobile = TextEditingController();
+  final city = TextEditingController();
   final password = TextEditingController();
   final confirmPassword = TextEditingController();
   bool isLoading = false;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.authenticatedOnboarding) {
-      final user = FirebaseAuth.instance.currentUser;
-      name.text = user?.displayName ?? '';
-      email.text = user?.email ?? '';
-    }
-  }
 
   @override
   void dispose() {
     name.dispose();
     email.dispose();
     mobile.dispose();
+    city.dispose();
     password.dispose();
     confirmPassword.dispose();
     super.dispose();
   }
 
-  Future<void> signOutOfOnboarding() async {
-    if (isLoading) return;
-    setState(() => isLoading = true);
-    try {
-      await (widget.signOutAction ?? () => AuthService().signOut())();
-    } catch (error) {
-      if (mounted) {
-        await showErrorDialog(
-          context,
-          'Could not sign out. Please try again.',
-          title: 'Sign out failed',
-        );
-      }
-    } finally {
-      if (mounted) setState(() => isLoading = false);
-    }
-  }
-
   void continueToVehicleRegistration() {
     if (isLoading) return;
     if (!formKey.currentState!.validate()) {
-      return;
-    }
-    final emailAddress = widget.authenticatedOnboarding
-        ? FirebaseAuth.instance.currentUser?.email
-        : email.text.trim();
-    if (emailAddress == null || emailAddress.isEmpty) {
-      showErrorDialog(
-        context,
-        'The authenticated account email is unavailable.',
-      );
       return;
     }
     Navigator.push(
@@ -91,9 +43,10 @@ class _SignUpPageState extends State<SignUpPage> {
         builder: (_) => VehicleDetailsPage(
           pendingSignup: PendingSignup(
             name: name.text.trim(),
-            email: emailAddress,
+            email: email.text.trim(),
             mobile: mobile.text.trim(),
-            password: widget.authenticatedOnboarding ? null : password.text,
+            city: city.text.trim(),
+            password: password.text,
           ),
         ),
       ),
@@ -110,13 +63,9 @@ class _SignUpPageState extends State<SignUpPage> {
             padding: const EdgeInsets.fromLTRB(28, 12, 28, 24),
             child: Column(
               children: [
-                ScreenHeader(
-                  title: widget.authenticatedOnboarding
-                      ? 'Complete Your Profile'
-                      : 'Create Your Account',
-                  subtitle: widget.authenticatedOnboarding
-                      ? 'Add your details and register an existing vehicle.'
-                      : 'Join EV Smart Companion',
+                const ScreenHeader(
+                  title: 'Create Your Account',
+                  subtitle: 'Join EV Smart Companion',
                 ),
                 const SizedBox(height: 34),
                 TextInputField(
@@ -130,34 +79,22 @@ class _SignUpPageState extends State<SignUpPage> {
                       : null,
                 ),
                 const SizedBox(height: 18),
-                if (!widget.authenticatedOnboarding) ...[
-                  TextInputField(
-                    controller: email,
-                    label: 'Email',
-                    maxLength: 254,
-                    hint: 'Enter your email',
-                    icon: Icons.email_outlined,
-                    keyboardType: TextInputType.emailAddress,
-                    validator: (v) =>
-                        v == null ||
-                            !RegExp(
-                              r'^[^\s@]+@[^\s@]+\.[^\s@]+$',
-                            ).hasMatch(v.trim())
-                        ? 'Enter a valid email'
-                        : null,
-                  ),
-                  const SizedBox(height: 18),
-                ] else ...[
-                  TextFormField(
-                    initialValue: email.text,
-                    readOnly: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Authenticated account email',
-                      prefixIcon: Icon(Icons.email_outlined),
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                ],
+                TextInputField(
+                  controller: email,
+                  label: 'Email',
+                  maxLength: 254,
+                  hint: 'Enter your email',
+                  icon: Icons.email_outlined,
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (v) =>
+                      v == null ||
+                          !RegExp(
+                            r'^[^\s@]+@[^\s@]+\.[^\s@]+$',
+                          ).hasMatch(v.trim())
+                      ? 'Enter a valid email'
+                      : null,
+                ),
+                const SizedBox(height: 18),
                 TextInputField(
                   controller: mobile,
                   label: 'Mobile Number',
@@ -173,72 +110,69 @@ class _SignUpPageState extends State<SignUpPage> {
                       ? 'Enter a valid mobile number'
                       : null,
                 ),
-                if (!widget.authenticatedOnboarding) ...[
-                  const SizedBox(height: 18),
-                  PasswordInputField(
-                    controller: password,
-                    label: 'Password',
-                    hint: 'Create a password',
-                    validator: (v) =>
-                        v == null ||
-                            !RegExp(
-                              r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$',
-                            ).hasMatch(v)
-                        ? 'Use 8+ characters with uppercase, lowercase, and a number'
-                        : null,
-                  ),
-                  const SizedBox(height: 18),
-                  PasswordInputField(
-                    controller: confirmPassword,
-                    label: 'Confirm Password',
-                    hint: 'Re-enter your password',
-                    validator: (v) =>
-                        v != password.text ? 'Passwords do not match' : null,
-                  ),
-                ],
+                const SizedBox(height: 18),
+                TextInputField(
+                  controller: city,
+                  label: 'City',
+                  maxLength: 80,
+                  hint: 'Enter your city',
+                  icon: Icons.location_on_outlined,
+                  textCapitalization: TextCapitalization.words,
+                  validator: (v) =>
+                      v == null || v.trim().isEmpty ? 'Enter your city' : null,
+                ),
+                const SizedBox(height: 18),
+                PasswordInputField(
+                  controller: password,
+                  label: 'Password',
+                  hint: 'Create a password',
+                  maxLength: 64,
+                  validator: (v) =>
+                      v == null ||
+                          !RegExp(
+                            r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,64}$',
+                          ).hasMatch(v)
+                      ? 'Use 8+ characters with uppercase, lowercase, and a number'
+                      : null,
+                ),
+                const SizedBox(height: 18),
+                PasswordInputField(
+                  controller: confirmPassword,
+                  label: 'Confirm Password',
+                  hint: 'Re-enter your password',
+                  maxLength: 64,
+                  validator: (v) =>
+                      v != password.text ? 'Passwords do not match' : null,
+                ),
                 const SizedBox(height: 30),
                 PrimaryButton(
                   label: 'Continue',
                   onPressed: continueToVehicleRegistration,
                   isLoading: isLoading,
                 ),
-                if (!widget.authenticatedOnboarding) ...[
-                  const SizedBox(height: 19),
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      const Text(
-                        'Already have an account?',
-                        style: TextStyle(color: AppTheme.mutedBlue),
-                      ),
-                      TextButton(
-                        onPressed: isLoading
-                            ? null
-                            : () => Navigator.pop(context),
-                        child: const Text(
-                          'Log In',
-                          style: TextStyle(
-                            color: AppTheme.blue,
-                            fontWeight: FontWeight.w700,
-                          ),
+                const SizedBox(height: 19),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    const Text(
+                      'Already have an account?',
+                      style: TextStyle(color: AppTheme.mutedBlue),
+                    ),
+                    TextButton(
+                      onPressed: isLoading
+                          ? null
+                          : () => Navigator.pop(context),
+                      child: const Text(
+                        'Log In',
+                        style: TextStyle(
+                          color: AppTheme.blue,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                    ],
-                  ),
-                ] else ...[
-                  const SizedBox(height: 19),
-                  TextButton(
-                    onPressed: isLoading ? null : signOutOfOnboarding,
-                    child: const Text(
-                      'Sign out and use another account',
-                      style: TextStyle(
-                        color: AppTheme.blue,
-                        fontWeight: FontWeight.w700,
-                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ],
             ),
           ),

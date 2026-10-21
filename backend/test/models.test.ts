@@ -172,7 +172,7 @@ describe('card transactions', () => {
 });
 
 describe('controls preferences', () => {
-  it('enforces the firestore.rules list limits', async () => {
+  it('enforces the preference list limits', async () => {
     const tooManyKeys = Array.from({ length: 33 }, (_, index) => `key-${index}`);
     await expect(
       ControlsPreferences.create({
@@ -251,8 +251,23 @@ describe('other collections', () => {
     expect(order.status).toBe('PENDING');
   });
 
-  it('keys users by Firebase UID and lowercases email', async () => {
-    const user = await User.create({ _id: 'uid-1', name: 'Driver', email: 'Driver@Example.com' });
+  it('keys users by ID and lowercases email', async () => {
+    const user = await User.create({
+      _id: 'uid-1',
+      name: 'Driver',
+      email: 'Driver@Example.com',
+      passwordHash: 'hash',
+    });
+    // The hash is never loaded by default nor serialised.
+    const loaded = await User.findById('uid-1').lean();
+    expect(loaded).not.toHaveProperty('passwordHash');
+    expect(user.toJSON()).not.toHaveProperty('passwordHash');
+    await expect(
+      User.create({ name: 'Copy', email: 'driver@example.com', passwordHash: 'h' }),
+    ).rejects.toThrow(/duplicate key/);
+    await expect(User.create({ name: 'No password', email: 'np@example.com' })).rejects.toThrow(
+      /passwordHash/,
+    );
     expect(user._id).toBe('uid-1');
     expect(user.email).toBe('driver@example.com');
     expect(user.vehicleId).toBeNull();

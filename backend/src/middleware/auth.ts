@@ -1,27 +1,50 @@
 import type { Request, RequestHandler } from 'express';
-import { getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
+import { jwtVerify, SignJWT } from 'jose';
 
 import type { AuthUser } from '../types.js';
 import { HttpError } from './errors.js';
 
-/** Verifies a Firebase ID token. Injected so tests never call Google. */
-export type TokenVerifier = (idToken: string) => Promise<AuthUser>;
+/** Verifies an access token. Injected so tests can use simple fake tokens. */
+export type TokenVerifier = (accessToken: string) => Promise<AuthUser>;
 
-const firebaseAppName = 'ev-backend';
+export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const ISSUER = 'ev-smart-companion-api';
+const AUDIENCE = 'ev-smart-companion-app';
 
-/** Only the project ID is needed: ID tokens are checked against Google's public keys. */
-export function createFirebaseTokenVerifier(projectId: string): TokenVerifier {
-  const app =
-    getApps().find((existing) => existing.name === firebaseAppName) ??
-    initializeApp({ projectId }, firebaseAppName);
-  const auth = getAuth(app);
-  return async (idToken) => {
-    const decoded = await auth.verifyIdToken(idToken);
+function secretKey(secret: string): Uint8Array {
+  return new TextEncoder().encode(secret);
+}
+
+/** Signs a short-lived HS256 access token for the given user. */
+export async function signAccessToken(
+  secret: string,
+  user: { uid: string; email: string },
+): Promise<string> {
+  return new SignJWT({ email: user.email, typ: 'access' })
+    .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+    .setSubject(user.uid)
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .setIssuedAt()
+    .setExpirationTime(`${ACCESS_TOKEN_TTL_SECONDS}s`)
+    .sign(secretKey(secret));
+}
+
+export function createJwtVerifier(secret: string): TokenVerifier {
+  const key = secretKey(secret);
+  return async (accessToken) => {
+    const { payload } = await jwtVerify(accessToken, key, {
+      algorithms: ['HS256'],
+      issuer: ISSUER,
+      audience: AUDIENCE,
+    });
+    if (payload.typ !== 'access' || typeof payload.sub !== 'string' || !payload.sub) {
+      throw new Error('Not an access token.');
+    }
     return {
-      uid: decoded.uid,
-      email: decoded.email ?? null,
-      emailVerified: decoded.email_verified === true,
+      uid: payload.sub,
+      email: typeof payload.email === 'string' ? payload.email : null,
+      emailVerified: false,
     };
   };
 }
