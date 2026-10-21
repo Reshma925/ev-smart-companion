@@ -270,7 +270,11 @@ class _BluetoothScanningPageState extends State<BluetoothScanningPage> {
                   ),
                   (route) => false,
                 ),
-                child: const Text('Continue to dashboard without connecting'),
+                child: Text(
+                  connected
+                      ? 'Go to dashboard'
+                      : 'Continue to dashboard without connecting',
+                ),
               ),
             ],
           ),

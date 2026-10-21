@@ -377,10 +377,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       ),
       builder: (context) => SizedBox(
         height: MediaQuery.sizeOf(context).height * 0.82,
-        child: ChargingCardSection(
-          uid: uid,
-          dataService: _dataService,
-        ),
+        child: ChargingCardSection(uid: uid, dataService: _dataService),
       ),
     );
   }
@@ -478,7 +475,9 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
       setState(() {
         _loadingStations = false;
         _hasSearched = true;
-        _stationMessage = error is StateError
+        _stationMessage = error is MapServiceBusyException
+            ? error.message
+            : error is StateError
             ? error.message.toString()
             : error is ApiException
             ? 'Could not refresh your vehicle details. ${error.message}'
@@ -523,7 +522,7 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         _loadingRoute = false;
         _destinationMessage = error is StateError
             ? error.message.toString()
-            : 'Could not refresh vehicle data from Firebase. Retry the route search.';
+            : 'Could not refresh your vehicle details. Retry the route search.';
       });
       return;
     }
@@ -600,6 +599,8 @@ class _ChargingStationPageState extends State<ChargingStationPage> {
         _destinationMessage = error is FormatException
             ? 'Please select a valid destination.'
             : error is RoadDirectionsException
+            ? error.message
+            : error is MapServiceBusyException
             ? error.message
             : 'Unable to calculate the route or load stations. Check your connection and retry.';
       });
@@ -1408,7 +1409,12 @@ class _StationList extends StatelessWidget {
         ),
         Expanded(
           child: loading
-              ? const Center(child: Text('Searching charging stations…'))
+              ? const Center(
+                  child: Text(
+                    'Searching charging stations… This can take up to a minute.',
+                    textAlign: TextAlign.center,
+                  ),
+                )
               : message != null
               ? _ListMessage(
                   message: message!,

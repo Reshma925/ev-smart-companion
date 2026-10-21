@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -7,14 +8,31 @@ import 'package:latlong2/latlong.dart';
 
 import '../models/charging_station.dart';
 
+/// Every public OpenStreetMap (Overpass) server was busy or unreachable.
+class MapServiceBusyException implements Exception {
+  const MapServiceBusyException();
+
+  String get message => 'Map service is busy, please try again in a minute.';
+
+  @override
+  String toString() => message;
+}
+
 class ChargingStationService {
   ChargingStationService({http.Client? client})
     : _client = client ?? http.Client();
 
-  static final Uri _endpoint = Uri.https(
-    'overpass-api.de',
-    '/api/interpreter',
-  );
+  // Public Overpass servers that allow browser (CORS) requests. When one is
+  // overloaded (429/5xx) or slow, the next is tried.
+  static final List<Uri> _endpoints = [
+    Uri.https('overpass-api.de', '/api/interpreter'),
+    Uri.https('maps.mail.ru', '/osm/tools/overpass/api/interpreter'),
+    Uri.https('overpass.private.coffee', '/api/interpreter'),
+    Uri.https('overpass.kumi.systems', '/api/interpreter'),
+  ];
+  static const _retryableStatusCodes = {429, 500, 502, 503, 504};
+  // The server that answered last is tried first next time.
+  static int _preferredEndpoint = 0;
   static const double defaultRouteCorridorWidthKm = 5;
 
   final http.Client _client;
@@ -29,8 +47,9 @@ class ChargingStationService {
     }
 
     final radiusMeters = (radiusKm * 1000).round();
-    final query = '''
-[out:json][timeout:40];
+    final query =
+        '''
+[out:json][timeout:25];
 (
   node["amenity"="charging_station"](around:$radiusMeters,${center.latitude},${center.longitude});
   way["amenity"="charging_station"](around:$radiusMeters,${center.latitude},${center.longitude});
@@ -44,37 +63,29 @@ out center tags;
         '${center.longitude.toStringAsFixed(5)}:${radiusKm.toStringAsFixed(3)}';
     final cached = _cached(cacheKey);
     if (cached != null) {
-      final refreshedDistances = cached
-          .map(
-            (station) => station.withDistanceFromOrigin(
-              ChargingStation.distanceBetweenKm(center, station.location),
-            ),
-          )
-          .where((station) => station.distanceKm <= radiusKm)
-          .toList()
-        ..sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
+      final refreshedDistances =
+          cached
+              .map(
+                (station) => station.withDistanceFromOrigin(
+                  ChargingStation.distanceBetweenKm(center, station.location),
+                ),
+              )
+              .where((station) => station.distanceKm <= radiusKm)
+              .toList()
+            ..sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
       return List.unmodifiable(refreshedDistances);
     }
-    final response = await _client
-        .post(
-          _endpoint,
-          headers: const {
-            'Accept': 'application/json',
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: {'data': query},
-        )
-        .timeout(const Duration(seconds: 50));
-
-    if (response.statusCode != 200) {
-      throw StateError(
-        'OpenStreetMap station search failed (${response.statusCode}).',
-      );
-    }
+    final response = await _postOverpass(
+      query,
+      perServer: const Duration(seconds: 25),
+      total: const Duration(seconds: 60),
+    );
 
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic> || decoded['elements'] is! List) {
-      throw const FormatException('OpenStreetMap returned invalid station data.');
+      throw const FormatException(
+        'OpenStreetMap returned invalid station data.',
+      );
     }
 
     final stations = _parseStations(
@@ -115,14 +126,12 @@ out center tags;
       );
     }
 
-    final cacheKey = 'route:${corridorWidthKm.toStringAsFixed(1)}:'
+    final cacheKey =
+        'route:${corridorWidthKm.toStringAsFixed(1)}:'
         '${searchRadiusKm.toStringAsFixed(3)}:'
         '${origin.latitude.toStringAsFixed(5)},'
         '${origin.longitude.toStringAsFixed(5)}:'
-        '${Object.hashAll(routePoints.map((point) => Object.hash(
-          point.latitude.toStringAsFixed(5),
-          point.longitude.toStringAsFixed(5),
-        )))}';
+        '${Object.hashAll(routePoints.map((point) => Object.hash(point.latitude.toStringAsFixed(5), point.longitude.toStringAsFixed(5))))}';
     final cached = _cached(cacheKey);
     if (cached != null) {
       return cached
@@ -136,8 +145,9 @@ out center tags;
     }
 
     final radiusMeters = (searchRadiusKm * 1000).round();
-    final query = '''
-[out:json][timeout:40];
+    final query =
+        '''
+[out:json][timeout:25];
 (
   node["amenity"="charging_station"](around:$radiusMeters,${origin.latitude},${origin.longitude});
   way["amenity"="charging_station"](around:$radiusMeters,${origin.latitude},${origin.longitude});
@@ -145,21 +155,11 @@ out center tags;
 );
 out center tags;
 ''';
-    final response = await _client
-        .post(
-          _endpoint,
-          headers: const {
-            'Accept': 'application/json',
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: {'data': query},
-        )
-        .timeout(const Duration(seconds: 50));
-    if (response.statusCode != 200) {
-      throw StateError(
-        'OpenStreetMap route-corridor search failed (${response.statusCode}).',
-      );
-    }
+    final response = await _postOverpass(
+      query,
+      perServer: const Duration(seconds: 25),
+      total: const Duration(seconds: 60),
+    );
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic> || decoded['elements'] is! List) {
       throw const FormatException(
@@ -229,8 +229,8 @@ out center tags;
 
     final sampleSpacingKm = math.min(10.0, corridorWidthKm);
     final centers = _sampleRoute(routePoints, sampleSpacingKm);
-    final radiusMeters =
-        ((corridorWidthKm + sampleSpacingKm / 2) * 1000).ceil();
+    final radiusMeters = ((corridorWidthKm + sampleSpacingKm / 2) * 1000)
+        .ceil();
     final selectors = StringBuffer();
     for (final center in centers) {
       selectors
@@ -247,43 +247,27 @@ out center tags;
           '(around:$radiusMeters,${center.latitude},${center.longitude});',
         );
     }
-    final query = '''
-[out:json][timeout:90];
+    final query =
+        '''
+[out:json][timeout:60];
 (
 $selectors);
 out center tags;
 ''';
-    final response = await _client
-        .post(
-          _endpoint,
-          headers: const {
-            'Accept': 'application/json',
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: {'data': query},
-        )
-        .timeout(const Duration(seconds: 100));
-    if (response.statusCode != 200) {
-      throw StateError(
-        'OpenStreetMap full-route station search failed '
-        '(${response.statusCode}).',
-      );
-    }
+    final response = await _postOverpass(
+      query,
+      perServer: const Duration(seconds: 60),
+      total: const Duration(seconds: 120),
+    );
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic> || decoded['elements'] is! List) {
       throw const FormatException(
         'OpenStreetMap returned invalid full-route station data.',
       );
     }
-    final stations = _parseStations(
-      decoded['elements'] as List,
-      origin: origin,
-    )
+    final stations = _parseStations(decoded['elements'] as List, origin: origin)
         .map((station) {
-          final diversionKm = distanceToRouteKm(
-            station.location,
-            routePoints,
-          );
+          final diversionKm = distanceToRouteKm(station.location, routePoints);
           return diversionKm <= corridorWidthKm
               ? station.withDistanceFromRoute(diversionKm)
               : null;
@@ -291,9 +275,8 @@ out center tags;
         .whereType<ChargingStation>()
         .toList();
     stations.sort(
-      (a, b) => (a.distanceFromRouteKm ?? 0).compareTo(
-        b.distanceFromRouteKm ?? 0,
-      ),
+      (a, b) =>
+          (a.distanceFromRouteKm ?? 0).compareTo(b.distanceFromRouteKm ?? 0),
     );
     final result = _deduplicate(stations);
     _cache[cacheKey] = (DateTime.now(), result);
@@ -350,6 +333,59 @@ out center tags;
 
   static String _normalizedIdentity(Object? value) =>
       value?.toString().trim().toLowerCase() ?? '';
+
+  /// Posts an Overpass query, falling back to the next server when one is
+  /// overloaded or slow. Throws [MapServiceBusyException] when all fail.
+  Future<http.Response> _postOverpass(
+    String query, {
+    required Duration perServer,
+    required Duration total,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    for (var attempt = 0; attempt < _endpoints.length; attempt++) {
+      final remaining = total - stopwatch.elapsed;
+      if (remaining < const Duration(seconds: 3)) break;
+      final index = (_preferredEndpoint + attempt) % _endpoints.length;
+      final endpoint = _endpoints[index];
+      try {
+        final response = await _client
+            .post(
+              endpoint,
+              headers: const {
+                'Accept': 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: {'data': query},
+            )
+            .timeout(remaining < perServer ? remaining : perServer);
+        // A 200 can still carry an Overpass timeout/out-of-memory remark.
+        final overloaded =
+            response.statusCode == 200 &&
+            response.body.contains('"remark"') &&
+            response.body.contains('runtime error');
+        if (response.statusCode == 200 && !overloaded) {
+          _preferredEndpoint = index;
+          return response;
+        }
+        debugPrint(
+          'OpenStreetMap server ${endpoint.host} returned '
+          '${overloaded ? 'a runtime error' : 'HTTP ${response.statusCode}'}.',
+        );
+        if (!overloaded &&
+            !_retryableStatusCodes.contains(response.statusCode)) {
+          throw StateError(
+            'OpenStreetMap rejected the station search '
+            '(${response.statusCode}).',
+          );
+        }
+      } on TimeoutException {
+        debugPrint('OpenStreetMap server ${endpoint.host} timed out.');
+      } on http.ClientException catch (error) {
+        debugPrint('OpenStreetMap server ${endpoint.host} failed: $error');
+      }
+    }
+    throw const MapServiceBusyException();
+  }
 
   List<ChargingStation>? _cached(String key) {
     final value = _cache[key];

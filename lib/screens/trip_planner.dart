@@ -164,8 +164,9 @@ class _TripPlannerPageState extends State<TripPlannerPage> {
       if (!mounted || generation != _requestGeneration) return;
       setState(() {
         _planning = false;
-        _errorMessage =
-            'Could not plan this trip. Check the destination and your network connection, then retry. ($error)';
+        _errorMessage = error is MapServiceBusyException
+            ? '${error.message} Tap Plan Trip to retry.'
+            : 'Could not plan this trip. Check the destination and your network connection, then retry. ($error)';
       });
     }
   }

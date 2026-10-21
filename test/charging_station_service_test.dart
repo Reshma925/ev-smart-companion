@@ -304,62 +304,158 @@ void main() {
     expect(stations.single.distanceKm, greaterThan(40));
   });
 
-  test('searches the entire long route, including beyond origin radius', () async {
-    late String query;
-    final client = MockClient((request) async {
-      query = request.bodyFields['data']!;
-      return http.Response(
-        jsonEncode({
-          'elements': [
-            {
-              'type': 'node',
-              'id': 81,
-              'lat': 0,
-              'lon': 1.9,
-              'tags': {
-                'amenity': 'charging_station',
-                'name': 'Far route station',
+  test(
+    'searches the entire long route, including beyond origin radius',
+    () async {
+      late String query;
+      final client = MockClient((request) async {
+        query = request.bodyFields['data']!;
+        return http.Response(
+          jsonEncode({
+            'elements': [
+              {
+                'type': 'node',
+                'id': 81,
+                'lat': 0,
+                'lon': 1.9,
+                'tags': {
+                  'amenity': 'charging_station',
+                  'name': 'Far route station',
+                },
               },
-            },
-            {
-              'type': 'node',
-              'id': 82,
-              'lat': 0.2,
-              'lon': 1,
-              'tags': {
-                'amenity': 'charging_station',
-                'name': 'Outside corridor',
+              {
+                'type': 'node',
+                'id': 82,
+                'lat': 0.2,
+                'lon': 1,
+                'tags': {
+                  'amenity': 'charging_station',
+                  'name': 'Outside corridor',
+                },
               },
-            },
-          ],
-        }),
-        200,
+            ],
+          }),
+          200,
+        );
+      });
+      final service = ChargingStationService(client: client);
+      addTearDown(service.close);
+
+      final stations = await service.findAlongEntireRoute(
+        origin: const LatLng(0, 0),
+        routePoints: const [LatLng(0, 0), LatLng(0, 2)],
+        corridorWidthKm: 5,
       );
-    });
-    final service = ChargingStationService(client: client);
-    addTearDown(service.close);
 
-    final stations = await service.findAlongEntireRoute(
-      origin: const LatLng(0, 0),
-      routePoints: const [LatLng(0, 0), LatLng(0, 2)],
-      corridorWidthKm: 5,
-    );
-
-    expect(query, contains('around:7500'));
-    expect(query, contains(',0.0,2.0'));
-    expect(stations.map((station) => station.name), ['Far route station']);
-    expect(stations.single.distanceKm, greaterThan(200));
-    expect(stations.single.distanceFromRouteKm, closeTo(0, 0.01));
-  });
+      expect(query, contains('around:7500'));
+      expect(query, contains(',0.0,2.0'));
+      expect(stations.map((station) => station.name), ['Far route station']);
+      expect(stations.single.distanceKm, greaterThan(200));
+      expect(stations.single.distanceFromRouteKm, closeTo(0, 0.01));
+    },
+  );
 
   test('calculates station diversion from a route', () {
     expect(
-      ChargingStationService.distanceToRouteKm(
-        const LatLng(0.01, 1),
-        const [LatLng(0, 0), LatLng(0, 2)],
-      ),
+      ChargingStationService.distanceToRouteKm(const LatLng(0.01, 1), const [
+        LatLng(0, 0),
+        LatLng(0, 2),
+      ]),
       closeTo(1.1, 0.1),
     );
   });
 
+  group('Overpass server fallback', () {
+    const center = LatLng(13.0827, 80.2707);
+    final okBody = jsonEncode({
+      'elements': [
+        {
+          'type': 'node',
+          'id': 1,
+          'lat': 13.09,
+          'lon': 80.27,
+          'tags': {'amenity': 'charging_station'},
+        },
+      ],
+    });
+
+    test('a busy server falls through to the next one', () async {
+      final hosts = <String>[];
+      final client = MockClient((request) async {
+        hosts.add(request.url.host);
+        return request.url.host == 'overpass-api.de'
+            ? http.Response('# 502 Gateway Timeout', 502)
+            : http.Response(okBody, 200);
+      });
+
+      final stations = await ChargingStationService(
+        client: client,
+      ).findNearbyStations(center: center, radiusKm: 5);
+
+      expect(stations, hasLength(1));
+      expect(hosts, contains('overpass-api.de'));
+      expect(hosts.last, isNot('overpass-api.de'));
+    });
+
+    test('an Overpass runtime-error reply is treated as busy', () async {
+      var calls = 0;
+      final client = MockClient((request) async {
+        calls++;
+        return calls == 1
+            ? http.Response(
+                jsonEncode({
+                  'elements': <Object>[],
+                  'remark': 'runtime error: Query timed out',
+                }),
+                200,
+              )
+            : http.Response(okBody, 200);
+      });
+
+      final stations = await ChargingStationService(
+        client: client,
+      ).findNearbyStations(center: const LatLng(13.1, 80.3), radiusKm: 5);
+
+      expect(calls, 2);
+      expect(stations, hasLength(1));
+    });
+
+    test('all servers busy gives a friendly, retryable error', () async {
+      var calls = 0;
+      final client = MockClient((request) async {
+        calls++;
+        return http.Response('busy', 503);
+      });
+
+      await expectLater(
+        ChargingStationService(
+          client: client,
+        ).findNearbyStations(center: const LatLng(12.9, 80.2), radiusKm: 5),
+        throwsA(
+          isA<MapServiceBusyException>().having(
+            (error) => error.message,
+            'message',
+            'Map service is busy, please try again in a minute.',
+          ),
+        ),
+      );
+      expect(calls, 4);
+    });
+
+    test('a rejected query is not retried on other servers', () async {
+      var calls = 0;
+      final client = MockClient((request) async {
+        calls++;
+        return http.Response('bad query', 400);
+      });
+
+      await expectLater(
+        ChargingStationService(
+          client: client,
+        ).findNearbyStations(center: const LatLng(12.8, 80.1), radiusKm: 5),
+        throwsA(isA<StateError>()),
+      );
+      expect(calls, 1);
+    });
+  });
 }
